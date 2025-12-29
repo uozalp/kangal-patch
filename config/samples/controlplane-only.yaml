@@ -1,0 +1,33 @@
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: controlplane-only
+spec:
+  # Target version
+  targetVersion: "factory.talos.dev/nocloud-installer-secureboot/95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7:v1.11.6"
+
+  # Only patch control plane nodes
+  patchControlPlane: true
+  patchWorkers: false
+
+  # Conservative settings for control plane
+  maxConcurrency: 1     # One at a time for safety
+
+  # Longer delays for control plane stability
+  delayBetweenNodes: "5m"
+
+  # Conservative failure handling
+  maxFailures: 0        # Stop on first failure
+
+  # Drain settings
+  respectPDBs: true
+  drainTimeout: "10m"
+  rebootTimeout: "15m"
+
+  # Talos configuration
+  talosConfig:
+    endpoints:
+      - 192.168.1.180:50000
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch

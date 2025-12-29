@@ -1,0 +1,42 @@
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: simple-upgrade
+spec:
+  # Target Talos version to upgrade to
+  targetVersion: "factory.talos.dev/nocloud-installer-secureboot/95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7:v1.11.6"
+
+  # Node selection
+  nodeSelector:
+    kubernetes.io/os: linux
+
+  # Patch both control plane and workers
+  patchControlPlane: false
+  patchWorkers: true
+  
+  maxConcurrency: 2
+
+  # Upgrade control plane first, then workers
+  controlPlaneFirst: false
+
+  # Delay between scheduling nodes
+  delayBetweenNodes: "300s"     # Wait 5 minutes between scheduling nodes
+
+  # Failure handling
+  maxFailures: 1        # Stop if more than 1 node fails
+
+  # Drain settings
+  respectPDBs: true
+  drainTimeout: "5m"
+  rebootTimeout: "10m"
+
+  # Pause control (can be toggled to pause/resume)
+  paused: false
+
+  # Talos API configuration (use secretRef in production)
+  talosConfig:
+    endpoints:
+      - 192.168.1.250:50000
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch

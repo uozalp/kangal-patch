@@ -1,0 +1,116 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kangalpatch.fullname" . }}-manager-role
+  labels:
+    {{- include "kangalpatch.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - kangalpatch.ozalp.dk
+  resources:
+  - patchplans
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kangalpatch.ozalp.dk
+  resources:
+  - patchjobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - delete
+- apiGroups:
+  - kangalpatch.ozalp.dk
+  resources:
+  - patchplans/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - kangalpatch.ozalp.dk
+  resources:
+  - patchjobs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kangalpatch.fullname" . }}-manager-rolebinding
+  labels:
+    {{- include "kangalpatch.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kangalpatch.fullname" . }}-manager-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "kangalpatch.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

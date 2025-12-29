@@ -1,0 +1,16 @@
+apiVersion: v2
+name: kangal-patch
+description: A Kubernetes operator for orchestrating Talos Linux cluster upgrades.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - talos
+  - kubernetes
+  - operator
+  - patching
+  - upgrade
+home: https://github.com/uozalp/kangal-patch
+maintainers:
+  - name: uozalp
+    email: uozalp@users.noreply.github.com
