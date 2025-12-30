@@ -1,4 +1,4 @@
-replicaCount: 1
+replicaCount: 2
 
 image:
   repository: ghcr.io/uozalp/kangal-patch
@@ -24,6 +24,8 @@ podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
   fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -48,6 +50,10 @@ affinity: {}
 
 # Controller manager settings
 controllerManager:
+  # Enable leader election for high availability
+  leaderElection:
+    enabled: true
+
   # Metrics server configuration
   metrics:
     bindAddress: ":8080"

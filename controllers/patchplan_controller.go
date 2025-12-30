@@ -65,6 +65,7 @@ const (
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles PatchPlan reconciliation
 func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

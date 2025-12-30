@@ -34,6 +34,9 @@ spec:
         command:
         - /manager
         args:
+        {{- if .Values.controllerManager.leaderElection.enabled }}
+        - --leader-elect
+        {{- end }}        
         - --health-probe-bind-address={{ .Values.controllerManager.healthProbe.bindAddress }}
         - --metrics-bind-address={{ .Values.controllerManager.metrics.bindAddress }}
         ports:
