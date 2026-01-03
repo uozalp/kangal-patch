@@ -21,6 +21,14 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: kangalpatch
+                app.kubernetes.io/component: manager
+            topologyKey: kubernetes.io/hostname
       containers:
       - name: manager
         image: ghcr.io/uozalp/kangal-patch:0.1.1
