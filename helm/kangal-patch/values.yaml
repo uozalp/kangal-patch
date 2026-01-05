@@ -46,7 +46,14 @@ nodeSelector: {}
 
 tolerations: []
 
-affinity: {}
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kangalpatch
+            app.kubernetes.io/component: manager
+        topologyKey: kubernetes.io/hostname
 
 # Controller manager settings
 controllerManager:
