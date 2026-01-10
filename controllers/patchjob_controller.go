@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,7 +39,8 @@ import (
 // PatchJobReconciler reconciles a PatchJob object
 type PatchJobReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	Namespace string
 }
 
 // Requeue intervals for different phases
@@ -132,6 +134,12 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 		drainer := drain.NewDrainer(r.Client)
 		if err := drainer.UncordonNode(ctx, patchJob.Spec.NodeName); err != nil {
 			logger.Error(err, "failed to uncordon node", "node", patchJob.Spec.NodeName)
+			// Continue anyway - node is at target version
+		}
+
+		// Delete the lease since no patching is needed
+		if err := r.deletePatchJobLease(ctx, patchJob); err != nil {
+			logger.Error(err, "failed to delete lease", "node", patchJob.Spec.NodeName)
 			// Continue anyway - node is at target version
 		}
 
@@ -415,4 +423,47 @@ func (r *PatchJobReconciler) waitForReboot(ctx context.Context, patchJob *patchv
 		"version", currentVersion)
 
 	return ctrl.Result{}, nil
+}
+
+// deletePatchJobLease deletes the scheduling lease associated with this PatchJob.
+func (r *PatchJobReconciler) deletePatchJobLease(ctx context.Context, patchJob *patchv1alpha1.PatchJob) error {
+	logger := log.FromContext(ctx)
+
+	planName := patchJob.Spec.PatchPlanRef
+	if planName == "" {
+		return fmt.Errorf("patchPlanRef not set")
+	}
+
+	var patchPlan patchv1alpha1.PatchPlan
+	if err := r.Get(ctx, types.NamespacedName{Name: planName}, &patchPlan); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get PatchPlan %s: %w", planName, err)
+	}
+
+	leaseName := fmt.Sprintf("%s-%s-scheduling", planName, patchJob.Spec.NodeName)
+
+	lease := &coordinationv1.Lease{}
+	leaseKey := types.NamespacedName{
+		Name:      leaseName,
+		Namespace: r.Namespace,
+	}
+
+	if err := r.Get(ctx, leaseKey, lease); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get lease %s: %w", leaseName, err)
+	}
+
+	if err := r.Delete(ctx, lease); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to delete lease %s: %w", leaseName, err)
+	}
+
+	logger.Info("deleted lease for patch job", "lease", leaseName, "node", patchJob.Spec.NodeName)
+	return nil
 }

@@ -1,10 +1,10 @@
 apiVersion: kangalpatch.ozalp.dk/v1alpha1
 kind: PatchPlan
 metadata:
-  name: simple-upgrade
+  name: simple-upgrade-existing
 spec:
   # Target Talos version to upgrade to
-  targetVersion: "factory.talos.dev/nocloud-installer-secureboot/95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7:v1.11.6"
+  targetVersion: "factory.talos.dev/nocloud-installer-secureboot/95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7:v1.11.3"
 
   # Node selection
   nodeSelector:
@@ -14,7 +14,7 @@ spec:
   patchControlPlane: false
   patchWorkers: true
   
-  maxConcurrency: 2
+  maxConcurrency: 1
 
   # Upgrade control plane first, then workers
   controlPlaneFirst: false
@@ -39,4 +39,4 @@ spec:
       - 192.168.1.250:50000
     secretRef:
       name: talos-credentials
-      namespace: kangal-patch
+      namespace: default
