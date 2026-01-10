@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
+	"github.com/uozalp/kangal-patch/internal/maintenance"
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/patchutil"
 )
@@ -143,6 +144,21 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if failureBudgetExceeded {
 		return ctrl.Result{}, nil
+	}
+
+	// Check maintenance window
+	inWindow, message := maintenance.IsInMaintenanceWindow(patchPlan.Spec.Maintenance, time.Now())
+	if !inWindow {
+		logger.Info("outside maintenance window, waiting", "reason", message)
+		// Try to calculate next window
+		nextWindow, err := maintenance.NextMaintenanceWindow(patchPlan.Spec.Maintenance, time.Now())
+		if err != nil {
+			logger.Info("unable to determine next maintenance window", "error", err.Error())
+			return ctrl.Result{RequeueAfter: 15 * time.Minute}, nil
+		}
+		requeueDuration := time.Until(nextWindow)
+		logger.Info("scheduling for next maintenance window", "nextWindow", nextWindow, "requeue", requeueDuration)
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
 
 	// Check if we should wait for leases to expire

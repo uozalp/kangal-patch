@@ -1,7 +1,7 @@
 apiVersion: kangalpatch.ozalp.dk/v1alpha1
 kind: PatchPlan
 metadata:
-  name: simple-upgrade
+  name: simple-upgrade-maintenance
 spec:
   # Target Talos version to upgrade to
   targetVersion: "factory.talos.dev/nocloud-installer-secureboot/95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7:v1.11.6"
@@ -32,6 +32,26 @@ spec:
 
   # Pause control (can be toggled to pause/resume)
   paused: false
+
+  # Maintenance windows configuration
+  maintenance:
+    # Exclude specific dates (e.g., holidays, important business days)
+    excludeDates:
+      - "2026-12-24"
+      - "2026-12-25"
+      - "2026-12-26"
+      - "2026-12-31"
+      - "2027-01-01"
+    
+    # Define when patching is allowed
+    windows:
+      - days: ["Monday", "Friday", "Saturday", "Sunday"]
+        startTime: "01:00"
+        endTime: "07:00"
+      
+      - days: ["Wednesday"]
+        startTime: "22:00"
+        endTime: "02:00"
 
   # Talos API configuration (use secretRef in production)
   talosConfig:
