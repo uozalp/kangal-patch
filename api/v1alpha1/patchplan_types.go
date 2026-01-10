@@ -78,6 +78,42 @@ type PatchPlanSpec struct {
 	// TalosConfig contains Talos API connection information
 	// +optional
 	TalosConfig TalosConfig `json:"talosConfig,omitempty"`
+
+	// Maintenance defines maintenance windows for patching operations
+	// +optional
+	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
+}
+
+// MaintenanceSpec defines maintenance windows for patching operations
+type MaintenanceSpec struct {
+	// ExcludeDates is a list of dates in YYYY-MM-DD format (e.g., "2026-12-24") when patching is not allowed
+	// +optional
+	ExcludeDates []string `json:"excludeDates,omitempty"`
+
+	// Windows defines time windows when patching is allowed
+	// +optional
+	Windows []MaintenanceWindow `json:"windows,omitempty"`
+}
+
+// MaintenanceWindow defines a time window for patching
+type MaintenanceWindow struct {
+	// Days is a list of weekdays when this window applies (e.g., ["Monday", "Friday"])
+	// If empty or omitted, applies to all days
+	// +optional
+	Days []string `json:"days,omitempty"`
+
+	// StartTime is the start time in HH:MM format (e.g., "01:00")
+	// +kubebuilder:validation:Pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$"
+	StartTime string `json:"startTime"`
+
+	// EndTime is the end time in HH:MM format (e.g., "05:00")
+	// +kubebuilder:validation:Pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$"
+	EndTime string `json:"endTime"`
+
+	// Disabled temporarily disables this maintenance window
+	// +kubebuilder:default=false
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // TalosConfig contains configuration for connecting to Talos API

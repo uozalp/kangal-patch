@@ -73,6 +73,49 @@ spec:
                 default: 5m
                 description: DrainTimeout is the maximum time to wait for node drain
                 type: string
+              maintenance:
+                description: Maintenance defines maintenance windows for patching
+                  operations
+                properties:
+                  excludeDates:
+                    description: ExcludeDates is a list of dates in YYYY-MM-DD format
+                      (e.g., "2026-12-24") when patching is not allowed
+                    items:
+                      type: string
+                    type: array
+                  windows:
+                    description: Windows defines time windows when patching is allowed
+                    items:
+                      description: MaintenanceWindow defines a time window for patching
+                      properties:
+                        days:
+                          description: |-
+                            Days is a list of weekdays when this window applies (e.g., ["Monday", "Friday"])
+                            If empty or omitted, applies to all days
+                          items:
+                            type: string
+                          type: array
+                        disabled:
+                          default: false
+                          description: Disabled temporarily disables this maintenance
+                            window
+                          type: boolean
+                        endTime:
+                          description: EndTime is the end time in HH:MM format (e.g.,
+                            "05:00")
+                          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                          type: string
+                        startTime:
+                          description: StartTime is the start time in HH:MM format
+                            (e.g., "01:00")
+                          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                          type: string
+                      required:
+                      - endTime
+                      - startTime
+                      type: object
+                    type: array
+                type: object
               maxConcurrency:
                 default: 1
                 description: MaxConcurrency is the maximum number of nodes to patch
