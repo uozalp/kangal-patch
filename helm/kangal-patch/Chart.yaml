@@ -2,8 +2,8 @@ apiVersion: v2
 name: kangal-patch
 description: A Kubernetes operator for orchestrating Talos Linux cluster upgrades.
 type: application
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.2
+appVersion: "0.1.2"
 keywords:
   - talos
   - kubernetes
