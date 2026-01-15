@@ -126,7 +126,7 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 		return r.failJob(ctx, original, patchJob, "failed to get current version", err)
 	}
 
-	targetVersion := patchutil.ExtractVersion(patchJob.Spec.TargetVersion)
+	targetVersion := patchJob.Spec.Target.Version
 
 	// Check if already at target version
 	if currentVersion == targetVersion {
@@ -347,8 +347,14 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 	}
 	defer talosClient.Close()
 
+	// Build the installer image URL
+	installerImage, err := patchutil.BuildInstallerImage(patchJob.Spec.Target)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to build installer image", err)
+	}
+
 	// Initiate upgrade
-	if err := talosClient.Upgrade(ctx, patchJob.Spec.NodeName, patchJob.Spec.TargetVersion); err != nil {
+	if err := talosClient.Upgrade(ctx, patchJob.Spec.NodeName, installerImage); err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to start upgrade", err)
 	}
 

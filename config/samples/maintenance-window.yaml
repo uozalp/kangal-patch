@@ -4,7 +4,12 @@ metadata:
   name: simple-upgrade-maintenance
 spec:
   # Target Talos version to upgrade to
-  targetVersion: "factory.talos.dev/nocloud-installer-secureboot/95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7:v1.11.6"
+  target:
+    version: v1.11.6
+    source: factory
+    installer: nocloud
+    schematicID: 95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7
+    secureBoot: true
 
   # Node selection
   nodeSelector:

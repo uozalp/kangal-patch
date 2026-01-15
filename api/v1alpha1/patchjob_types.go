@@ -33,9 +33,9 @@ type PatchJobSpec struct {
 	// +kubebuilder:validation:Required
 	NodeName string `json:"nodeName"`
 
-	// TargetVersion is the Talos version to upgrade to
+	// Target defines the target Talos image specification
 	// +kubebuilder:validation:Required
-	TargetVersion string `json:"targetVersion"`
+	Target TargetSpec `json:"target"`
 
 	// PatchPlanRef references the parent PatchPlan
 	// +optional
