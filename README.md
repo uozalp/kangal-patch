@@ -8,6 +8,7 @@ Key features:
 - Controlled concurrent node upgrades
 - Automatic workload draining with PDB enforcement
 - Configurable failure budgets with automatic halt on threshold breach
+- Maintenance window support with date exclusions
 - Pause and resume support for manual intervention
 - Real-time upgrade status tracking
 
@@ -108,13 +109,62 @@ spec:
       namespace: kangal-patch
 ```
 
+### 3. Optional: Configure Maintenance Windows
+
+Restrict patching to specific time windows and exclude certain dates:
+
+```yaml
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: talos-upgrade-maintenance
+spec:
+  targetVersion: "ghcr.io/siderolabs/installer:v1.11.6"
+  
+  # ... other configuration ...
+  
+  # Maintenance windows
+  maintenance:
+    # Exclude specific dates (holidays, blackout periods)
+    excludeDates:
+      - "2026-12-24"
+      - "2026-12-25"
+      - "2026-12-26"
+      - "2026-12-31"
+      - "2027-01-01"
+    
+    # Define when patching is allowed (UTC)
+    windows:
+      # Monday and Friday early morning
+      - days: ["Monday", "Friday"]  # Supports: "Monday", "Mon", "monday"
+        startTime: "01:00"
+        endTime: "05:00"
+      
+      # Wednesday night window
+      - days: ["Wed"]
+        startTime: "22:00"
+        endTime: "02:00"  # Spans midnight
+      
+      # Every day window (omit days field or use ["Any"])
+      - startTime: "03:00"
+        endTime: "04:00"
+```
+
+**Notes on maintenance windows:**
+- All times are in UTC
+- Day names support full names ("Monday"), 3-letter abbreviations ("Mon"), case-insensitive
+- Omit `days` field or use `["Any"]` to match all days
+- Windows can span midnight (e.g., 22:00 to 02:00)
+- Patching will be paused outside maintenance windows
+- Exclude dates use YYYY-MM-DD format
+
 Apply the PatchPlan:
 
 ```bash
 kubectl apply -f patchplan.yaml
 ```
 
-### 3. Monitor Progress
+### 4. Monitor Progress
 
 Watch the upgrade progress:
 
@@ -140,7 +190,7 @@ $ kubectl get patchplan simple-upgrade -o jsonpath='{.status}' | jq
 }
 ```
 
-### 4. Pause/Resume
+### 5. Pause/Resume
 
 Pause an ongoing upgrade:
 
@@ -172,6 +222,23 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}
 | `patchWorkers` | bool | Patch worker nodes | `true` |
 | `controlPlaneFirst` | bool | Patch control plane first | `false` |
 | `paused` | bool | Pause operation | `false` |
+| `maintenance` | object | Maintenance window configuration | `nil` |
+
+#### Maintenance Spec
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `excludeDates` | []string | List of dates (YYYY-MM-DD) to exclude from patching |
+| `windows` | []MaintenanceWindow | List of time windows when patching is allowed |
+
+#### MaintenanceWindow
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `days` | []string | Days of week (e.g., "Monday", "Mon"). Empty = all days |
+| `startTime` | string | Start time in HH:MM format (UTC) |
+| `endTime` | string | End time in HH:MM format (UTC) |
+| `disabled` | bool | Temporarily disable this window |
 
 ## Development
 
