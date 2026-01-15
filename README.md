@@ -80,7 +80,10 @@ kind: PatchPlan
 metadata:
   name: talos-upgrade-v1.11.6
 spec:
-  targetVersion: "ghcr.io/siderolabs/installer:v1.11.6"
+  # Target Talos image specification
+  target:
+    version: v1.11.6
+    source: ghcr          # ghcr or factory
   
   # Patch workers first, then control plane
   patchWorkers: true
@@ -112,6 +115,50 @@ Apply the PatchPlan:
 
 ```bash
 kubectl apply -f patchplan.yaml
+```
+
+**Example using Talos Factory images:**
+
+The `target` specification uses individual fields to construct the factory image URL. The operator builds the full URL in the format:
+```
+factory.talos.dev/{installer}-installer[-secureboot]/{schematicID}:{version}
+```
+
+Field breakdown:
+```yaml
+target:
+  version: v1.11.6                    # The Talos version tag
+  source: factory                     # Use factory.talos.dev (vs ghcr)
+  installer: nocloud                  # The installer type (aws, azure, nocloud, etc.)
+  schematicID: 95d432d6bb...          # The factory schematic hash
+  secureBoot: true                    # Adds -secureboot suffix to installer
+```
+
+Full example:
+
+```yaml
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: talos-upgrade-factory
+spec:
+  target:
+    version: v1.12.1
+    source: factory
+    installer: aws
+    schematicID: 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
+    secureBoot: true
+  
+  patchWorkers: true
+  patchControlPlane: true
+  maxConcurrency: 2
+  
+  talosConfig:
+    endpoints:
+      - 10.0.0.10:50000
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch
 ```
 
 ### 3. Monitor Progress
@@ -160,7 +207,12 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}
 
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
-| `targetVersion` | string | Target Talos version | Required |
+| `target` | object | Target Talos image specification | Required |
+| `target.version` | string | Talos version (e.g., v1.12.1) | Required |
+| `target.source` | string | Image source: "ghcr" or "factory" | `ghcr` |
+| `target.installer` | string | Installer type (e.g., "aws", "nocloud"). Required when source=factory | - |
+| `target.schematicID` | string | Talos factory schematic ID. Required when source=factory | - |
+| `target.secureBoot` | bool | Enable secure boot. Only applicable when source=factory | `false` |
 | `nodeSelector` | map | Label selector for nodes | `{}` |
 | `maxConcurrency` | int | Max nodes to patch concurrently | `1` |
 | `maxFailures` | int | Max allowed failures before stopping | `0` |

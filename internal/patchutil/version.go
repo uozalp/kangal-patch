@@ -17,17 +17,38 @@ limitations under the License.
 package patchutil
 
 import (
-	"strings"
+	"fmt"
+
+	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 )
 
-// ExtractVersion extracts the version tag from a Talos image reference.
-func ExtractVersion(imageRef string) string {
-	// Split by colon to get the tag part
-	parts := strings.Split(imageRef, ":")
-	if len(parts) < 2 {
-		return ""
+// BuildInstallerImage constructs the full Talos installer image reference from a TargetSpec.
+func BuildInstallerImage(t patchv1alpha1.TargetSpec) (string, error) {
+	if t.Source == "ghcr" || t.Source == "" {
+		return fmt.Sprintf(
+			"ghcr.io/siderolabs/installer:%s",
+			t.Version,
+		), nil
 	}
 
-	// Return the last part (version tag)
-	return parts[len(parts)-1]
+	if t.SchematicID == "" {
+		return "", fmt.Errorf("schematicID is required when source=factory")
+	}
+
+	if t.Installer == "" {
+		return "", fmt.Errorf("installer is required when source=factory")
+	}
+
+	suffix := ""
+	if t.SecureBoot {
+		suffix = "-secureboot"
+	}
+
+	return fmt.Sprintf(
+		"factory.talos.dev/%s-installer%s/%s:%s",
+		t.Installer,
+		suffix,
+		t.SchematicID,
+		t.Version,
+	), nil
 }

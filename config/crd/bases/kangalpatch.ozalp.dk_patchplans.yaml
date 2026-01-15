@@ -190,11 +190,41 @@ spec:
                     - name
                     type: object
                 type: object
-              targetVersion:
-                description: TargetVersion is the Talos version to upgrade to
-                type: string
+              target:
+                description: Target defines the target Talos image specification
+                properties:
+                  installer:
+                    description: |-
+                      Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
+                      Required when source=factory
+                    type: string
+                  schematicID:
+                    description: |-
+                      SchematicID is the Talos factory schematic ID
+                      Required when source=factory
+                    type: string
+                  secureBoot:
+                    default: false
+                    description: |-
+                      SecureBoot enables secure boot for the installer image
+                      Only applicable when source=factory
+                    type: boolean
+                  source:
+                    default: ghcr
+                    description: 'Source specifies the image source: "factory" or
+                      "ghcr"'
+                    enum:
+                    - factory
+                    - ghcr
+                    type: string
+                  version:
+                    description: Version is the Talos version (e.g., v1.12.1)
+                    type: string
+                required:
+                - version
+                type: object
             required:
-            - targetVersion
+            - target
             type: object
           status:
             description: PatchPlanStatus defines the observed state of PatchPlan
@@ -295,7 +325,7 @@ spec:
                 format: date-time
                 type: string
               targetVersion:
-                description: TargetVersion is the display version extracted from spec.targetVersion
+                description: TargetVersion is the display version extracted from spec.target
                 type: string
               totalNodes:
                 description: TotalNodes is the total number of nodes selected for
