@@ -20,11 +20,39 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// TargetSpec defines the target Talos image specification
+type TargetSpec struct {
+	// Version is the Talos version (e.g., v1.12.1)
+	// +kubebuilder:validation:Required
+	Version string `json:"version"`
+
+	// Source specifies the image source: "factory" or "ghcr"
+	// +kubebuilder:validation:Enum=factory;ghcr
+	// +kubebuilder:default=ghcr
+	Source string `json:"source,omitempty"`
+
+	// Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
+	// Required when source=factory
+	// +optional
+	Installer string `json:"installer,omitempty"`
+
+	// SchematicID is the Talos factory schematic ID
+	// Required when source=factory
+	// +optional
+	SchematicID string `json:"schematicID,omitempty"`
+
+	// SecureBoot enables secure boot for the installer image
+	// Only applicable when source=factory
+	// +kubebuilder:default=false
+	// +optional
+	SecureBoot bool `json:"secureBoot,omitempty"`
+}
+
 // PatchPlanSpec defines the desired state of PatchPlan
 type PatchPlanSpec struct {
-	// TargetVersion is the Talos version to upgrade to
+	// Target defines the target Talos image specification
 	// +kubebuilder:validation:Required
-	TargetVersion string `json:"targetVersion"`
+	Target TargetSpec `json:"target"`
 
 	// NodeSelector selects which nodes to patch (label selector)
 	// +optional
@@ -155,7 +183,7 @@ type PatchPlanStatus struct {
 	// +kubebuilder:validation:Enum=Pending;InProgress;Paused;Completed;Failed
 	Phase PatchPhase `json:"phase,omitempty"`
 
-	// TargetVersion is the display version extracted from spec.targetVersion
+	// TargetVersion is the display version extracted from spec.target
 	// +optional
 	TargetVersion string `json:"targetVersion,omitempty"`
 

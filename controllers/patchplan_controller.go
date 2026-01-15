@@ -109,7 +109,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update status counts and total nodes
 	original := patchPlan.DeepCopy()
 	patchPlan.Status.TotalNodes = len(targetNodes)
-	patchPlan.Status.TargetVersion = patchutil.ExtractVersion(patchPlan.Spec.TargetVersion)
+	patchPlan.Status.TargetVersion = patchPlan.Spec.Target.Version
 	patchPlan.Status.CompletedNodes = jobSummary.Completed
 	patchPlan.Status.FailedNodes = jobSummary.Failed
 
@@ -400,9 +400,9 @@ func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *pat
 			},
 		},
 		Spec: patchv1alpha1.PatchJobSpec{
-			NodeName:      node.Name,
-			TargetVersion: patchPlan.Spec.TargetVersion,
-			PatchPlanRef:  patchPlan.Name,
+			NodeName:     node.Name,
+			Target:       patchPlan.Spec.Target,
+			PatchPlanRef: patchPlan.Name,
 		},
 	}
 
