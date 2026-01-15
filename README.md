@@ -34,7 +34,7 @@ If failures exceed your threshold, it stops automatically.
 ```bash
 # Install KangalPatch
 helm install kangal-patch oci://ghcr.io/uozalp/helm/kangal-patch \
-  --version 0.1.0 \
+  --version 0.1.2 \
   --namespace kangal-patch \
   --create-namespace
 ```
@@ -79,12 +79,11 @@ Create a `PatchPlan` custom resource to define your upgrade:
 apiVersion: kangalpatch.ozalp.dk/v1alpha1
 kind: PatchPlan
 metadata:
-  name: talos-upgrade-v1.11.6
+  name: simple-upgrade
 spec:
-  # Target Talos image specification
   target:
     version: v1.11.6
-    source: ghcr          # ghcr or factory
+    source: ghcr
   
   # Patch workers first, then control plane
   patchWorkers: true
@@ -156,6 +155,11 @@ spec:
       namespace: kangal-patch
 ```
 
+Apply the PatchPlan:
+
+```bash
+kubectl apply -f patchplan.yaml
+```
 
 ### 3. Optional: Configure Maintenance Windows
 
@@ -167,7 +171,9 @@ kind: PatchPlan
 metadata:
   name: talos-upgrade-maintenance
 spec:
-  targetVersion: "ghcr.io/siderolabs/installer:v1.11.6"
+  target:
+    version: v1.11.6
+    source: ghcr
   
   # ... other configuration ...
   
@@ -206,11 +212,6 @@ spec:
 - Patching will be paused outside maintenance windows
 - Exclude dates use YYYY-MM-DD format
 
-Apply the PatchPlan:
-
-```bash
-kubectl apply -f patchplan.yaml
-```
 
 ### 4. Monitor Progress
 
@@ -259,11 +260,6 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
 | `target` | object | Target Talos image specification | Required |
-| `target.version` | string | Talos version (e.g., v1.12.1) | Required |
-| `target.source` | string | Image source: "ghcr" or "factory" | `ghcr` |
-| `target.installer` | string | Installer type (e.g., "aws", "nocloud"). Required when source=factory | - |
-| `target.schematicID` | string | Talos factory schematic ID. Required when source=factory | - |
-| `target.secureBoot` | bool | Enable secure boot. Only applicable when source=factory | `false` |
 | `nodeSelector` | map | Label selector for nodes | `{}` |
 | `maxConcurrency` | int | Max nodes to patch concurrently | `1` |
 | `maxFailures` | int | Max allowed failures before stopping | `0` |
@@ -276,6 +272,16 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}
 | `controlPlaneFirst` | bool | Patch control plane first | `false` |
 | `paused` | bool | Pause operation | `false` |
 | `maintenance` | object | Maintenance window configuration | `nil` |
+
+#### Target Spec
+
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `version` | string | Talos version (e.g., v1.12.1) | Required |
+| `source` | string | Image source: "ghcr" or "factory" | `ghcr` |
+| `installer` | string | Installer type (e.g., "aws", "nocloud"). Required when source=factory | - |
+| `schematicID` | string | Talos factory schematic ID. Required when source=factory | - |
+| `secureBoot` | bool | Enable secure boot. Only applicable when source=factory | `false` |
 
 #### Maintenance Spec
 
