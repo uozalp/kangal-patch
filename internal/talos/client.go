@@ -81,7 +81,13 @@ func (c *Client) Upgrade(ctx context.Context, nodeName, image string) error {
 	ctx = client.WithNodes(ctx, nodeName)
 
 	// Perform upgrade (image, preserve=true, stage=false, force=false)
-	resp, err := c.client.Upgrade(ctx, image, true, false, false)
+	resp, err := c.client.UpgradeWithOptions(
+		ctx,
+		client.WithUpgradeImage(image),
+		client.WithUpgradePreserve(true),
+		client.WithUpgradeStage(false),
+		client.WithUpgradeForce(false),
+	)
 	if err != nil {
 		return fmt.Errorf("upgrade failed for node %s: %w", nodeName, err)
 	}
