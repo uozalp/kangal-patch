@@ -29,9 +29,10 @@ type PatchJobReconciler struct {
 
 // Requeue intervals for different phases
 const (
-	requeueForDrainCheck   = 10 * time.Second // checking if drain is complete
-	requeueForUpgradeStart = 5 * time.Second  // starting upgrade operation
-	requeueForRebootCheck  = 60 * time.Second // checking if node is back online
+	requeueImmediate       = 1 * time.Millisecond // Requeue is deprecated in favor of a minimal RequeueAfter
+	requeueForDrainCheck   = 10 * time.Second     // checking if drain is complete
+	requeueForUpgradeStart = 5 * time.Second      // starting upgrade operation
+	requeueForRebootCheck  = 60 * time.Second     // checking if node is back online
 )
 
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchjobs,verbs=get;list;watch;create;update;patch;delete
@@ -102,7 +103,11 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to create Talos client", err)
 	}
-	defer talosClient.Close()
+	defer func() {
+		if cerr := talosClient.Close(); cerr != nil {
+			logger.Error(cerr, "failed to close Talos client")
+		}
+	}()
 
 	// Get current version from node
 	currentVersion, err := talosClient.GetVersion(ctx, patchJob.Spec.NodeName)
@@ -160,7 +165,7 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 		"currentVersion", currentVersion,
 		"targetVersion", targetVersion)
 
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: requeueImmediate}, nil
 }
 
 // failJob transitions a PatchJob to failed state and updates status
@@ -329,7 +334,11 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to create Talos client", err)
 	}
-	defer talosClient.Close()
+	defer func() {
+		if cerr := talosClient.Close(); cerr != nil {
+			logger.Error(cerr, "failed to close Talos client")
+		}
+	}()
 
 	// Build the installer image URL
 	installerImage, err := patchutil.BuildInstallerImage(patchJob.Spec.Target)
@@ -374,7 +383,11 @@ func (r *PatchJobReconciler) waitForReboot(ctx context.Context, patchJob *patchv
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to create Talos client", err)
 	}
-	defer talosClient.Close()
+	defer func() {
+		if cerr := talosClient.Close(); cerr != nil {
+			logger.Error(cerr, "failed to close Talos client")
+		}
+	}()
 
 	// Try to get version - this checks both responsiveness and upgrade success
 	currentVersion, err := talosClient.GetVersion(ctx, patchJob.Spec.NodeName)

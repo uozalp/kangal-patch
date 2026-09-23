@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // TargetSpec defines the target Talos image specification
@@ -246,5 +247,8 @@ type PatchPlanList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&PatchPlan{}, &PatchPlanList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &PatchPlan{}, &PatchPlanList{})
+		return nil
+	})
 }
