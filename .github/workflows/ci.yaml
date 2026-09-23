@@ -76,7 +76,7 @@ jobs:
       run: go mod download
 
     - name: golangci-lint
-      uses: golangci/golangci-lint-action@v4
+      uses: golangci/golangci-lint-action@v8
       with:
-        version: latest
-        args: --timeout=3m --out-format=colored-line-number
+        version: v2.5
+        args: --timeout=3m
