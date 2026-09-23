@@ -50,19 +50,14 @@ func (c *Client) GetVersion(ctx context.Context, nodeName string) (string, error
 		return "", fmt.Errorf("client not initialized")
 	}
 
-	// Set context to target specific node by hostname
-	ctx = client.WithNodes(ctx, nodeName)
+	ctx = client.WithNode(ctx, nodeName)
 
 	resp, err := c.client.Version(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get version from node %s: %w", nodeName, err)
 	}
 
-	// Find response from target node
 	for _, msg := range resp.Messages {
-		if msg.Metadata == nil || msg.Metadata.Hostname != nodeName {
-			continue
-		}
 		if msg.Version != nil && msg.Version.Tag != "" {
 			return msg.Version.Tag, nil
 		}
@@ -77,27 +72,27 @@ func (c *Client) Upgrade(ctx context.Context, nodeName, image string) error {
 		return fmt.Errorf("client not initialized")
 	}
 
-	// Set context to target specific node by hostname
-	ctx = client.WithNodes(ctx, nodeName)
+	// WithNode targets a single node directly, unlike deprecated WithNodes which proxies via apid
+	ctx = client.WithNode(ctx, nodeName)
 
-	// Perform upgrade (image, preserve=true, stage=false, force=false)
-	resp, err := c.client.Upgrade(ctx, image, true, false, false)
+	// TODO: migrate to LifecycleClient's streaming Upgrade RPC once adopted across the codebase
+	//nolint:staticcheck // SA1019: UpgradeWithOptions deprecated in favor of LifecycleClient
+	resp, err := c.client.UpgradeWithOptions(
+		ctx,
+		client.WithUpgradeImage(image),
+		client.WithUpgradePreserve(true),
+		client.WithUpgradeStage(false),
+		client.WithUpgradeForce(false),
+	)
 	if err != nil {
 		return fmt.Errorf("upgrade failed for node %s: %w", nodeName, err)
 	}
 
-	// Check response from target node
-	for _, msg := range resp.Messages {
-		if msg.Metadata == nil || msg.Metadata.Hostname != nodeName {
-			continue
-		}
-		if msg.Metadata.Error != "" {
-			return fmt.Errorf("upgrade error from node %s: %s", nodeName, msg.Metadata.Error)
-		}
-		return nil
+	if len(resp.Messages) == 0 {
+		return fmt.Errorf("no response received from node %s", nodeName)
 	}
 
-	return fmt.Errorf("no response received from node %s", nodeName)
+	return nil
 }
 
 // IsResponsive checks if a node is responsive via Talos API
@@ -106,26 +101,15 @@ func (c *Client) IsResponsive(ctx context.Context, nodeName string) (bool, error
 		return false, fmt.Errorf("client not initialized")
 	}
 
-	// Set context to target specific node by hostname
-	ctx = client.WithNodes(ctx, nodeName)
+	// WithNode targets a single node directly, unlike deprecated WithNodes which proxies via apid
+	ctx = client.WithNode(ctx, nodeName)
 
-	resp, err := c.client.Version(ctx)
+	_, err := c.client.Version(ctx)
 	if err != nil {
 		return false, nil // Node not responsive, not an error condition
 	}
 
-	// Check if we got response from target node
-	for _, msg := range resp.Messages {
-		if msg.Metadata == nil || msg.Metadata.Hostname != nodeName {
-			continue
-		}
-		if msg.Metadata.Error != "" {
-			return false, nil
-		}
-		return true, nil
-	}
-
-	return false, nil
+	return true, nil
 }
 
 // Close closes the Talos client connection
