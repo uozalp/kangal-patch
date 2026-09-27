@@ -16,6 +16,7 @@ import (
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/drain"
+	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/talos"
 )
@@ -110,7 +111,12 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 	}()
 
 	// Get current version from node
-	currentVersion, err := talosClient.GetVersion(ctx, patchJob.Spec.NodeName)
+	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
+	}
+
+	currentVersion, err := talosClient.GetVersion(ctx, nodeAddr)
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to get current version", err)
 	}
@@ -186,6 +192,15 @@ func (r *PatchJobReconciler) failJob(ctx context.Context, original, modified *pa
 // patchStatus applies a status patch to the PatchJob, only updating changed fields.
 func (r *PatchJobReconciler) patchStatus(ctx context.Context, original, modified *patchv1alpha1.PatchJob) error {
 	return patchutil.PatchStatus(ctx, r.Status(), original, modified)
+}
+
+// getNodeAddress resolves a Kubernetes node name to its InternalIP for reaching the Talos API.
+func (r *PatchJobReconciler) getNodeAddress(ctx context.Context, nodeName string) (string, error) {
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &node); err != nil {
+		return "", fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+	return nodeutil.GetNodeInternalIP(&node)
 }
 
 // getTalosConfig retrieves Talos configuration from the parent PatchPlan.
@@ -346,8 +361,13 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 		return r.failJob(ctx, original, patchJob, "failed to build installer image", err)
 	}
 
+	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
+	}
+
 	// Initiate upgrade
-	if err := talosClient.Upgrade(ctx, patchJob.Spec.NodeName, installerImage); err != nil {
+	if err := talosClient.Upgrade(ctx, nodeAddr, installerImage); err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to start upgrade", err)
 	}
 
@@ -390,7 +410,12 @@ func (r *PatchJobReconciler) waitForReboot(ctx context.Context, patchJob *patchv
 	}()
 
 	// Try to get version - this checks both responsiveness and upgrade success
-	currentVersion, err := talosClient.GetVersion(ctx, patchJob.Spec.NodeName)
+	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
+	}
+
+	currentVersion, err := talosClient.GetVersion(ctx, nodeAddr)
 	if err != nil {
 		// Node not responsive yet, keep waiting
 		logger.Info("waiting for node to become responsive", "node", patchJob.Spec.NodeName)

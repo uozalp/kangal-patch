@@ -253,6 +253,62 @@ Resume:
 kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}}'
 ```
 
+### 6. Upgrading Across Multiple Talos Versions
+
+Talos doesn't reliably support jumping several minor versions in a single upgrade. A large
+version skip (e.g. `v1.11.x` → `v1.14.x`) can silently fail: the upgrade succeeds and the node
+reboots, but it boots back into the *old* partition with no error reported anywhere. The
+`PatchJob` will just look stuck, waiting for a target version that never arrives.
+
+If you're multiple minor versions behind, upgrade in stages rather than jumping straight to the
+latest version. For example, going from `v1.11.x` to `v1.14.0`:
+
+```bash
+# Stage 1: v1.11.x -> v1.13.10
+kubectl apply -f - <<EOF
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: upgrade-stage-1
+spec:
+  target:
+    version: v1.13.10
+    source: ghcr
+  patchWorkers: true
+  patchControlPlane: true
+  maxConcurrency: 1
+  talosConfig:
+    endpoints: ["10.0.0.10:50000"]
+    secretRef: {name: talos-credentials, namespace: kangal-patch}
+EOF
+
+# Wait for upgrade-stage-1 to reach phase: Completed, then:
+
+# Stage 2: v1.13.10 -> v1.14.0
+kubectl apply -f - <<EOF
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: upgrade-stage-2
+spec:
+  target:
+    version: v1.14.0
+    source: ghcr
+  patchWorkers: true
+  patchControlPlane: true
+  maxConcurrency: 1
+  talosConfig:
+    endpoints: ["10.0.0.10:50000"]
+    secretRef: {name: talos-credentials, namespace: kangal-patch}
+EOF
+```
+
+**Spotting a stuck upgrade:** `kubectl get patchjob` shows a job stuck in the `Rebooting` phase
+with `currentVersion` unchanged from before the upgrade, even though `kubectl get nodes` reports
+the node as `Ready` again. Confirm the actual installed version via the node's `OS-IMAGE` column
+(`kubectl get nodes -o wide`) or `talosctl -n <node-ip> version`, then retry with an intermediate
+version as shown above.
+
 ## Configuration Reference
 
 ### PatchPlan Spec

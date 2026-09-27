@@ -260,7 +260,7 @@ func (r *PatchPlanReconciler) cleanupExpiredLeases(ctx context.Context, planName
 	logger := log.FromContext(ctx)
 
 	leaseList := &coordinationv1.LeaseList{}
-	leaseLabels := client.MatchingLabels{"kangalpatch.ozalp.dk/plan": planName}
+	leaseLabels := client.MatchingLabels{"kangalpatch.ozalp.dk/patchplan": planName}
 	if err := r.List(ctx, leaseList, leaseLabels, client.InNamespace(r.Namespace)); err != nil {
 		logger.Error(err, "unable to list leases")
 		return err
@@ -299,7 +299,7 @@ func (r *PatchPlanReconciler) leaseCapacityReached(ctx context.Context, planName
 
 	// Get leases for this plan
 	leaseList := &coordinationv1.LeaseList{}
-	leaseLabels := client.MatchingLabels{"kangalpatch.ozalp.dk/plan": planName}
+	leaseLabels := client.MatchingLabels{"kangalpatch.ozalp.dk/patchplan": planName}
 	if err := r.List(ctx, leaseList, leaseLabels, client.InNamespace(r.Namespace)); err != nil {
 		logger.Error(err, "unable to list leases")
 		return false, err
@@ -344,8 +344,8 @@ func (r *PatchPlanReconciler) createSchedulingLease(ctx context.Context, patchPl
 			Name:      fmt.Sprintf("%s-%s-scheduling", patchPlan.Name, nodeName),
 			Namespace: r.Namespace,
 			Labels: map[string]string{
-				"kangalpatch.ozalp.dk/plan": patchPlan.Name,
-				"kangalpatch.ozalp.dk/node": nodeName,
+				"kangalpatch.ozalp.dk/patchplan": patchPlan.Name,
+				"kangalpatch.ozalp.dk/node":      nodeName,
 			},
 		},
 		Spec: coordinationv1.LeaseSpec{
@@ -379,8 +379,8 @@ func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *pat
 		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("%s-%s", patchPlan.Name, node.Name),
 			Labels: map[string]string{
-				"kangalpatch.ozalp.dk/plan": patchPlan.Name,
-				"kangalpatch.ozalp.dk/node": node.Name,
+				"kangalpatch.ozalp.dk/patchplan": patchPlan.Name,
+				"kangalpatch.ozalp.dk/node":      node.Name,
 			},
 		},
 		Spec: patchv1alpha1.PatchJobSpec{

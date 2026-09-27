@@ -2,12 +2,24 @@ package nodeutil
 
 import (
 	"context"
+	"fmt"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// GetNodeInternalIP returns the node's InternalIP address. The Talos API is reached by
+// address, not by the Kubernetes node name, which isn't guaranteed to be DNS-resolvable.
+func GetNodeInternalIP(node *corev1.Node) (string, error) {
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			return addr.Address, nil
+		}
+	}
+	return "", fmt.Errorf("no InternalIP address found for node %s", node.Name)
+}
 
 // SplitByRole splits nodes into control plane and worker nodes
 func SplitByRole(nodes []corev1.Node) (controlPlane, workers []corev1.Node) {
