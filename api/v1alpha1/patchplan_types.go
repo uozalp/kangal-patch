@@ -5,11 +5,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// TargetSpec defines the target Talos image specification
+// TargetSpec defines the target Talos and/or Kubernetes version specification.
+// At least one of TalosVersion or KubernetesVersion must be set.
 type TargetSpec struct {
-	// Version is the Talos version (e.g., v1.12.1)
-	// +kubebuilder:validation:Required
-	Version string `json:"version"`
+	// TalosVersion is the desired Talos OS version (e.g., v1.12.1). Omit to leave the Talos
+	// version untouched and only upgrade KubernetesVersion.
+	// +optional
+	TalosVersion string `json:"talosVersion,omitempty"`
+
+	// KubernetesVersion is the desired Kubernetes version (e.g., v1.32.4). Omit to leave the
+	// Kubernetes version untouched and only upgrade TalosVersion.
+	// Requires ControlPlaneFirst and PatchControlPlane to be true, since kubelets must never run
+	// newer than the control plane they connect to.
+	// +optional
+	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 
 	// Source specifies the image source: "factory" or "ghcr"
 	// +kubebuilder:validation:Enum=factory;ghcr
@@ -34,8 +43,11 @@ type TargetSpec struct {
 }
 
 // PatchPlanSpec defines the desired state of PatchPlan
+// +kubebuilder:validation:XValidation:rule="size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion) > 0",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
+// +kubebuilder:validation:XValidation:rule="size(self.target.kubernetesVersion) == 0 || self.controlPlaneFirst",message="controlPlaneFirst must be true when target.kubernetesVersion is set"
+// +kubebuilder:validation:XValidation:rule="size(self.target.kubernetesVersion) == 0 || self.patchControlPlane",message="patchControlPlane must be true when target.kubernetesVersion is set"
 type PatchPlanSpec struct {
-	// Target defines the target Talos image specification
+	// Target defines the target Talos and/or Kubernetes version specification
 	// +kubebuilder:validation:Required
 	Target TargetSpec `json:"target"`
 
@@ -168,9 +180,19 @@ type PatchPlanStatus struct {
 	// +kubebuilder:validation:Enum=Pending;InProgress;Paused;Completed;Failed
 	Phase PatchPhase `json:"phase,omitempty"`
 
-	// TargetVersion is the display version extracted from spec.target
+	// TargetTalosVersion is the display Talos version extracted from spec.target
 	// +optional
-	TargetVersion string `json:"targetVersion,omitempty"`
+	TargetTalosVersion string `json:"targetTalosVersion,omitempty"`
+
+	// TargetKubernetesVersion is the display Kubernetes version extracted from spec.target
+	// +optional
+	TargetKubernetesVersion string `json:"targetKubernetesVersion,omitempty"`
+
+	// KubeProxyUpgraded indicates whether the cluster-wide kube-proxy DaemonSet image has been
+	// rolled out to match spec.target.kubernetesVersion. Only meaningful when kubernetesVersion is
+	// set; control plane nodes are upgraded before this is attempted, and worker nodes wait for it.
+	// +optional
+	KubeProxyUpgraded bool `json:"kubeProxyUpgraded,omitempty"`
 
 	// TotalNodes is the total number of nodes selected for patching
 	TotalNodes int `json:"totalNodes,omitempty"`
@@ -222,7 +244,8 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.status.targetVersion`
+// +kubebuilder:printcolumn:name="TalosTarget",type=string,JSONPath=`.status.targetTalosVersion`
+// +kubebuilder:printcolumn:name="K8sTarget",type=string,JSONPath=`.status.targetKubernetesVersion`
 // +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.totalNodes`
 // +kubebuilder:printcolumn:name="Completed",type=integer,JSONPath=`.status.completedNodes`
 // +kubebuilder:printcolumn:name="Failed",type=integer,JSONPath=`.status.failedNodes`

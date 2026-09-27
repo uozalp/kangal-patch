@@ -7,7 +7,11 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"github.com/cosi-project/runtime/pkg/resource"
+	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
+	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 	kangalpatchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 )
 
@@ -90,6 +94,75 @@ func (c *Client) Upgrade(ctx context.Context, nodeName, image string) error {
 
 	if len(resp.Messages) == 0 {
 		return fmt.Errorf("no response received from node %s", nodeName)
+	}
+
+	return nil
+}
+
+// PatchKubeletVersion patches the kubelet image on a node via a machine config patch. Unlike
+// Upgrade, this does not reboot the node - Talos restarts the kubelet service in place.
+func (c *Client) PatchKubeletVersion(ctx context.Context, nodeName, kubeletImage string) error {
+	patch := fmt.Sprintf(`[{"op": "add", "path": "/machine/kubelet/image", "value": %q}]`, kubeletImage)
+	return c.patchMachineConfig(ctx, nodeName, patch)
+}
+
+// PatchControlPlaneVersion patches the kube-apiserver, kube-controller-manager and kube-scheduler
+// static pod images on a control plane node via a machine config patch. Does not reboot the node -
+// Talos restarts the static pods in place.
+func (c *Client) PatchControlPlaneVersion(ctx context.Context, nodeName, apiServerImage, controllerManagerImage, schedulerImage string) error {
+	patch := fmt.Sprintf(`[
+		{"op": "add", "path": "/cluster/apiServer/image", "value": %q},
+		{"op": "add", "path": "/cluster/controllerManager/image", "value": %q},
+		{"op": "add", "path": "/cluster/scheduler/image", "value": %q}
+	]`, apiServerImage, controllerManagerImage, schedulerImage)
+	return c.patchMachineConfig(ctx, nodeName, patch)
+}
+
+// patchMachineConfig applies a JSON6902 patch to a node's machine config without a reboot. It
+// assumes the patched fields' parent objects (e.g. machine.kubelet, cluster.apiServer) already
+// exist in the node's config, which is the case for any config generated with `talosctl gen config`.
+func (c *Client) patchMachineConfig(ctx context.Context, nodeName, jsonPatch string) error {
+	if c.client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	ctx = client.WithNode(ctx, nodeName)
+
+	res, err := c.client.COSI.Get(ctx, resource.NewMetadata(configres.NamespaceName, configres.MachineConfigType, configres.ActiveID, resource.VersionUndefined))
+	if err != nil {
+		return fmt.Errorf("failed to get machine config from node %s: %w", nodeName, err)
+	}
+
+	mc, ok := res.(*configres.MachineConfig)
+	if !ok {
+		return fmt.Errorf("unexpected resource type for machine config on node %s", nodeName)
+	}
+
+	currentBytes, err := mc.Provider().Bytes()
+	if err != nil {
+		return fmt.Errorf("failed to read machine config from node %s: %w", nodeName, err)
+	}
+
+	patches, err := configpatcher.LoadPatches([]string{jsonPatch})
+	if err != nil {
+		return fmt.Errorf("failed to load config patch: %w", err)
+	}
+
+	out, err := configpatcher.Apply(configpatcher.WithBytes(currentBytes), patches)
+	if err != nil {
+		return fmt.Errorf("failed to apply config patch: %w", err)
+	}
+
+	patchedBytes, err := out.Bytes()
+	if err != nil {
+		return fmt.Errorf("failed to encode patched machine config: %w", err)
+	}
+
+	if _, err := c.client.ApplyConfiguration(ctx, &machineapi.ApplyConfigurationRequest{
+		Data: patchedBytes,
+		Mode: machineapi.ApplyConfigurationRequest_NO_REBOOT,
+	}); err != nil {
+		return fmt.Errorf("failed to apply machine config to node %s: %w", nodeName, err)
 	}
 
 	return nil

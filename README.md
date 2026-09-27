@@ -82,7 +82,7 @@ metadata:
   name: simple-upgrade
 spec:
   target:
-    version: v1.11.6
+    talosVersion: v1.11.6
     source: ghcr
   
   # Patch workers first, then control plane
@@ -115,13 +115,13 @@ spec:
 
 The `target` specification uses individual fields to construct the factory image URL. The operator builds the full URL in the format:
 ```
-factory.talos.dev/{installer}-installer[-secureboot]/{schematicID}:{version}
+factory.talos.dev/{installer}-installer[-secureboot]/{schematicID}:{talosVersion}
 ```
 
 Field breakdown:
 ```yaml
 target:
-  version: v1.11.6                    # The Talos version tag
+  talosVersion: v1.11.6                # The Talos version tag
   source: factory                     # Use factory.talos.dev (vs ghcr)
   installer: nocloud                  # The installer type (aws, azure, nocloud, etc.)
   schematicID: 95d432d6bb...          # The factory schematic hash
@@ -137,7 +137,7 @@ metadata:
   name: talos-upgrade-factory
 spec:
   target:
-    version: v1.12.1
+    talosVersion: v1.12.1
     source: factory
     installer: aws
     schematicID: 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
@@ -172,7 +172,7 @@ metadata:
   name: talos-upgrade-maintenance
 spec:
   target:
-    version: v1.11.6
+    talosVersion: v1.11.6
     source: ghcr
   
   # ... other configuration ...
@@ -221,8 +221,8 @@ Watch the upgrade progress:
 # Watch status in real-time
 $ kubectl get patchplan -w
 
-NAME             PHASE       TARGET    TOTAL   COMPLETED   FAILED   AGE
-simple-upgrade   Completed   v1.11.6   6       6           0        79m
+NAME             PHASE       TALOSTARGET   K8STARGET   TOTAL   COMPLETED   FAILED   AGE
+simple-upgrade   Completed   v1.11.6                   6       6           0        79m
 
 # Check individual node status
 $ kubectl get patchplan simple-upgrade -o jsonpath='{.status}' | jq
@@ -234,7 +234,7 @@ $ kubectl get patchplan simple-upgrade -o jsonpath='{.status}' | jq
   "message": "all nodes processed",
   "phase": "Completed",
   "startTime": "2025-12-28T19:32:29Z",
-  "targetVersion": "v1.11.6",
+  "targetTalosVersion": "v1.11.6",
   "totalNodes": 6
 }
 ```
@@ -272,7 +272,7 @@ metadata:
   name: upgrade-stage-1
 spec:
   target:
-    version: v1.13.10
+    talosVersion: v1.13.10
     source: ghcr
   patchWorkers: true
   patchControlPlane: true
@@ -292,7 +292,7 @@ metadata:
   name: upgrade-stage-2
 spec:
   target:
-    version: v1.14.0
+    talosVersion: v1.14.0
     source: ghcr
   patchWorkers: true
   patchControlPlane: true
@@ -304,10 +304,31 @@ EOF
 ```
 
 **Spotting a stuck upgrade:** `kubectl get patchjob` shows a job stuck in the `Rebooting` phase
-with `currentVersion` unchanged from before the upgrade, even though `kubectl get nodes` reports
+with `currentTalosVersion` unchanged from before the upgrade, even though `kubectl get nodes` reports
 the node as `Ready` again. Confirm the actual installed version via the node's `OS-IMAGE` column
 (`kubectl get nodes -o wide`) or `talosctl -n <node-ip> version`, then retry with an intermediate
 version as shown above.
+
+### 7. Kubernetes Version Compatibility
+
+Not every Kubernetes version runs on every Talos version. Before setting `target.kubernetesVersion`,
+check the official Talos support matrix for the Talos version your nodes are running:
+**https://docs.siderolabs.com/talos/\<talos-version\>/getting-started/support-matrix**
+
+As of this writing, the supported combinations are:
+
+| Talos version | Supported Kubernetes versions |
+|---|---|
+| [1.14](https://docs.siderolabs.com/talos/v1.14/getting-started/support-matrix) | 1.37, 1.36, 1.35, 1.34, 1.33 |
+| [1.13](https://docs.siderolabs.com/talos/v1.13/getting-started/support-matrix) | 1.36, 1.35, 1.34, 1.33, 1.32, 1.31 |
+| [1.12](https://docs.siderolabs.com/talos/v1.12/getting-started/support-matrix) | 1.35, 1.34, 1.33, 1.32, 1.31, 1.30 |
+| [1.11](https://docs.siderolabs.com/talos/v1.11/getting-started/support-matrix) | 1.34, 1.33, 1.32, 1.31, 1.30, 1.29 |
+| [1.10](https://docs.siderolabs.com/talos/v1.10/getting-started/support-matrix) | 1.33, 1.32, 1.31, 1.30, 1.29, 1.28 |
+
+This table goes stale with every new Talos/Kubernetes release, so always check the link above for
+the current matrix rather than relying on the snapshot here. kangal-patch does **not** currently
+validate `target.kubernetesVersion` against this matrix itself (see `private/TODO.md`) - requesting
+an unsupported combination will fail at the Talos API level rather than being rejected up front.
 
 ## Configuration Reference
 
@@ -315,7 +336,7 @@ version as shown above.
 
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
-| `target` | object | Target Talos image specification | Required |
+| `target` | object | Target Talos and/or Kubernetes version specification | Required |
 | `nodeSelector` | map | Label selector for nodes | `{}` |
 | `maxConcurrency` | int | Max nodes to patch concurrently | `1` |
 | `maxFailures` | int | Max allowed failures before stopping | `0` |
@@ -331,9 +352,15 @@ version as shown above.
 
 #### Target Spec
 
+At least one of `talosVersion`/`kubernetesVersion` must be set; both can be set to upgrade both
+in the same PatchPlan. Setting `kubernetesVersion` requires `controlPlaneFirst` and
+`patchControlPlane` to be `true`, since a kubelet must never run newer than the control plane it
+connects to.
+
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
-| `version` | string | Talos version (e.g., v1.12.1) | Required |
+| `talosVersion` | string | Talos OS version (e.g., v1.12.1) | - |
+| `kubernetesVersion` | string | Kubernetes version (e.g., v1.32.4). Patches the kubelet and, on control plane nodes, the kube-apiserver/controller-manager/scheduler static pods and the cluster-wide kube-proxy DaemonSet. No drain/reboot required | - |
 | `source` | string | Image source: "ghcr" or "factory" | `ghcr` |
 | `installer` | string | Installer type (e.g., "aws", "nocloud"). Required when source=factory | - |
 | `schematicID` | string | Talos factory schematic ID. Required when source=factory | - |

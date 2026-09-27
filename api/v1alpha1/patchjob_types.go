@@ -13,12 +13,13 @@ const (
 )
 
 // PatchJobSpec defines the desired state of PatchJob
+// +kubebuilder:validation:XValidation:rule="size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion) > 0",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
 type PatchJobSpec struct {
 	// NodeName is the name of the node to patch
 	// +kubebuilder:validation:Required
 	NodeName string `json:"nodeName"`
 
-	// Target defines the target Talos image specification
+	// Target defines the target Talos and/or Kubernetes version specification
 	// +kubebuilder:validation:Required
 	Target TargetSpec `json:"target"`
 
@@ -30,7 +31,7 @@ type PatchJobSpec struct {
 // PatchJobStatus defines the observed state of PatchJob
 type PatchJobStatus struct {
 	// Phase represents the current phase of the patch operation
-	// +kubebuilder:validation:Enum=Pending;Draining;Upgrading;Rebooting;Validating;Completed;Failed
+	// +kubebuilder:validation:Enum=Pending;Draining;Upgrading;Rebooting;UpgradingKubernetes;ValidatingKubernetes;Completed;Failed
 	Phase PatchJobPhase `json:"phase,omitempty"`
 
 	// Message contains human-readable message about current state
@@ -45,13 +46,21 @@ type PatchJobStatus struct {
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
-	// CurrentVersion is the Talos version before upgrade
+	// CurrentTalosVersion is the Talos version before upgrade
 	// +optional
-	CurrentVersion string `json:"currentVersion,omitempty"`
+	CurrentTalosVersion string `json:"currentTalosVersion,omitempty"`
 
-	// TargetVersion is the extracted version tag for display (e.g., v1.11.5)
+	// TargetTalosVersion is the extracted Talos version tag for display (e.g., v1.11.5)
 	// +optional
-	TargetVersion string `json:"targetVersion,omitempty"`
+	TargetTalosVersion string `json:"targetTalosVersion,omitempty"`
+
+	// CurrentKubernetesVersion is the kubelet version before upgrade, as reported by the node
+	// +optional
+	CurrentKubernetesVersion string `json:"currentKubernetesVersion,omitempty"`
+
+	// TargetKubernetesVersion is the extracted Kubernetes version tag for display (e.g., v1.32.4)
+	// +optional
+	TargetKubernetesVersion string `json:"targetKubernetesVersion,omitempty"`
 
 	// Conditions represent the latest available observations of the PatchJob's state
 	// +optional
@@ -62,12 +71,14 @@ type PatchJobStatus struct {
 type PatchJobPhase string
 
 const (
-	PatchJobPhasePending   PatchJobPhase = "Pending"
-	PatchJobPhaseDraining  PatchJobPhase = "Draining"
-	PatchJobPhaseUpgrading PatchJobPhase = "Upgrading"
-	PatchJobPhaseRebooting PatchJobPhase = "Rebooting"
-	PatchJobPhaseCompleted PatchJobPhase = "Completed"
-	PatchJobPhaseFailed    PatchJobPhase = "Failed"
+	PatchJobPhasePending              PatchJobPhase = "Pending"
+	PatchJobPhaseDraining             PatchJobPhase = "Draining"
+	PatchJobPhaseUpgrading            PatchJobPhase = "Upgrading"
+	PatchJobPhaseRebooting            PatchJobPhase = "Rebooting"
+	PatchJobPhaseUpgradingKubernetes  PatchJobPhase = "UpgradingKubernetes"
+	PatchJobPhaseValidatingKubernetes PatchJobPhase = "ValidatingKubernetes"
+	PatchJobPhaseCompleted            PatchJobPhase = "Completed"
+	PatchJobPhaseFailed               PatchJobPhase = "Failed"
 )
 
 // IsTerminal returns true if the phase is terminal (Completed or Failed)
@@ -91,8 +102,10 @@ func (pj *PatchJob) ShouldCleanup() bool {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.spec.nodeName`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Current",type=string,JSONPath=`.status.currentVersion`
-// +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.status.targetVersion`
+// +kubebuilder:printcolumn:name="TalosCurrent",type=string,JSONPath=`.status.currentTalosVersion`
+// +kubebuilder:printcolumn:name="TalosTarget",type=string,JSONPath=`.status.targetTalosVersion`
+// +kubebuilder:printcolumn:name="K8sCurrent",type=string,JSONPath=`.status.currentKubernetesVersion`
+// +kubebuilder:printcolumn:name="K8sTarget",type=string,JSONPath=`.status.targetKubernetesVersion`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PatchJob is the Schema for the patchjobs API

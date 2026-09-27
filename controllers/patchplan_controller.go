@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -51,6 +53,14 @@ const (
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
+
+// kubeProxyDaemonSetName/kubeProxyNamespace identify the cluster-wide kube-proxy DaemonSet that
+// is upgraded once, after all control plane nodes have completed their Kubernetes upgrade.
+const (
+	kubeProxyDaemonSetName = "kube-proxy"
+	kubeProxyNamespace     = "kube-system"
+)
 
 // Reconcile handles PatchPlan reconciliation
 func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -93,7 +103,8 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Update status counts and total nodes
 	original := patchPlan.DeepCopy()
 	patchPlan.Status.TotalNodes = len(targetNodes)
-	patchPlan.Status.TargetVersion = patchPlan.Spec.Target.Version
+	patchPlan.Status.TargetTalosVersion = patchPlan.Spec.Target.TalosVersion
+	patchPlan.Status.TargetKubernetesVersion = patchPlan.Spec.Target.KubernetesVersion
 	patchPlan.Status.CompletedNodes = jobSummary.Completed
 	patchPlan.Status.FailedNodes = jobSummary.Failed
 
@@ -166,6 +177,33 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Info("no more nodes to schedule, waiting for in-progress jobs", "inProgress", jobSummary.InProgress)
 
 		return ctrl.Result{RequeueAfter: requeueWhenJobsInProgress}, nil
+	}
+
+	// Kubernetes upgrades must fully land on every control plane node (apiserver, kubelet) before
+	// any worker's kubelet is bumped or the cluster-wide kube-proxy DaemonSet is upgraded - a
+	// kubelet must never run newer than the apiserver it connects to.
+	if patchPlan.Spec.Target.KubernetesVersion != "" && len(controlPlaneNodes) > 0 && !nodeutil.IsControlPlane(nextNode) {
+		if !allNodesCompleted(controlPlaneNodes, jobsByNode) {
+			logger.Info("waiting for control plane nodes to finish kubernetes upgrade before patching workers")
+			return ctrl.Result{RequeueAfter: requeueWhenJobsInProgress}, nil
+		}
+
+		if !patchPlan.Status.KubeProxyUpgraded {
+			done, err := r.ensureKubeProxyUpgraded(ctx, patchPlan.Spec.Target.KubernetesVersion)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if !done {
+				logger.Info("waiting for kube-proxy rollout before patching workers")
+				return ctrl.Result{RequeueAfter: requeueForNextNode}, nil
+			}
+
+			kubeProxyOriginal := patchPlan.DeepCopy()
+			patchPlan.Status.KubeProxyUpgraded = true
+			if err := r.patchStatus(ctx, kubeProxyOriginal, &patchPlan); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
 	// Set phase to InProgress before creating job (handles retry scenarios)
@@ -252,6 +290,51 @@ func (r *PatchPlanReconciler) maxConcurrencyReached(ctx context.Context, patchPl
 		"max", patchPlan.Spec.MaxConcurrency)
 
 	return true
+}
+
+// allNodesCompleted returns true if every node has a Completed PatchJob in jobsByNode.
+func allNodesCompleted(nodes []corev1.Node, jobsByNode map[string]*patchv1alpha1.PatchJob) bool {
+	for i := range nodes {
+		job, ok := jobsByNode[nodes[i].Name]
+		if !ok || job.Status.Phase != patchv1alpha1.PatchJobPhaseCompleted {
+			return false
+		}
+	}
+	return true
+}
+
+// ensureKubeProxyUpgraded patches the cluster-wide kube-proxy DaemonSet image to match
+// kubernetesVersion and reports whether the rollout has finished. Clusters without a kube-proxy
+// DaemonSet (e.g. kube-proxy-less CNI setups) are treated as already done.
+func (r *PatchPlanReconciler) ensureKubeProxyUpgraded(ctx context.Context, kubernetesVersion string) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	var ds appsv1.DaemonSet
+	if err := r.Get(ctx, types.NamespacedName{Name: kubeProxyDaemonSetName, Namespace: kubeProxyNamespace}, &ds); err != nil {
+		if errors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("failed to get kube-proxy DaemonSet: %w", err)
+	}
+
+	if len(ds.Spec.Template.Spec.Containers) == 0 {
+		return false, fmt.Errorf("kube-proxy DaemonSet has no containers")
+	}
+
+	targetImage := patchutil.BuildKubeProxyImage(kubernetesVersion)
+	if ds.Spec.Template.Spec.Containers[0].Image != targetImage {
+		original := ds.DeepCopy()
+		ds.Spec.Template.Spec.Containers[0].Image = targetImage
+		if err := r.Patch(ctx, &ds, client.MergeFrom(original)); err != nil {
+			return false, fmt.Errorf("failed to update kube-proxy image: %w", err)
+		}
+		logger.Info("upgraded kube-proxy DaemonSet image", "image", targetImage)
+		return false, nil
+	}
+
+	rolledOut := ds.Status.UpdatedNumberScheduled == ds.Status.DesiredNumberScheduled &&
+		ds.Status.NumberReady == ds.Status.DesiredNumberScheduled
+	return rolledOut, nil
 }
 
 // cleanupExpiredLeases removes all expired leases for the given PatchPlan.

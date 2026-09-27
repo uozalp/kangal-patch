@@ -18,8 +18,11 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.targetVersion
-      name: Target
+    - jsonPath: .status.targetTalosVersion
+      name: TalosTarget
+      type: string
+    - jsonPath: .status.targetKubernetesVersion
+      name: K8sTarget
       type: string
     - jsonPath: .status.totalNodes
       name: Total
@@ -191,12 +194,20 @@ spec:
                     type: object
                 type: object
               target:
-                description: Target defines the target Talos image specification
+                description: Target defines the target Talos and/or Kubernetes version
+                  specification
                 properties:
                   installer:
                     description: |-
                       Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
                       Required when source=factory
+                    type: string
+                  kubernetesVersion:
+                    description: |-
+                      KubernetesVersion is the desired Kubernetes version (e.g., v1.32.4). Omit to leave the
+                      Kubernetes version untouched and only upgrade TalosVersion.
+                      Requires ControlPlaneFirst and PatchControlPlane to be true, since kubelets must never run
+                      newer than the control plane they connect to.
                     type: string
                   schematicID:
                     description: |-
@@ -217,15 +228,26 @@ spec:
                     - factory
                     - ghcr
                     type: string
-                  version:
-                    description: Version is the Talos version (e.g., v1.12.1)
+                  talosVersion:
+                    description: |-
+                      TalosVersion is the desired Talos OS version (e.g., v1.12.1). Omit to leave the Talos
+                      version untouched and only upgrade KubernetesVersion.
                     type: string
-                required:
-                - version
                 type: object
             required:
             - target
             type: object
+            x-kubernetes-validations:
+            - message: at least one of target.talosVersion or target.kubernetesVersion
+                must be set
+              rule: size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion)
+                > 0
+            - message: controlPlaneFirst must be true when target.kubernetesVersion
+                is set
+              rule: size(self.target.kubernetesVersion) == 0 || self.controlPlaneFirst
+            - message: patchControlPlane must be true when target.kubernetesVersion
+                is set
+              rule: size(self.target.kubernetesVersion) == 0 || self.patchControlPlane
           status:
             description: PatchPlanStatus defines the observed state of PatchPlan
             properties:
@@ -301,6 +323,12 @@ spec:
                 description: FailedNodes is the number of nodes that failed to patch
                   (derived from PatchJobs)
                 type: integer
+              kubeProxyUpgraded:
+                description: |-
+                  KubeProxyUpgraded indicates whether the cluster-wide kube-proxy DaemonSet image has been
+                  rolled out to match spec.target.kubernetesVersion. Only meaningful when kubernetesVersion is
+                  set; control plane nodes are upgraded before this is attempted, and worker nodes wait for it.
+                type: boolean
               lastNodeScheduledAt:
                 description: |-
                   LastNodeScheduledAt is when the last PatchJob was created
@@ -324,8 +352,13 @@ spec:
                 description: StartTime is when the patching operation started
                 format: date-time
                 type: string
-              targetVersion:
-                description: TargetVersion is the display version extracted from spec.target
+              targetKubernetesVersion:
+                description: TargetKubernetesVersion is the display Kubernetes version
+                  extracted from spec.target
+                type: string
+              targetTalosVersion:
+                description: TargetTalosVersion is the display Talos version extracted
+                  from spec.target
                 type: string
               totalNodes:
                 description: TotalNodes is the total number of nodes selected for

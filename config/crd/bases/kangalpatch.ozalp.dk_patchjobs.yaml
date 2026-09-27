@@ -21,11 +21,17 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.currentVersion
-      name: Current
+    - jsonPath: .status.currentTalosVersion
+      name: TalosCurrent
       type: string
-    - jsonPath: .status.targetVersion
-      name: Target
+    - jsonPath: .status.targetTalosVersion
+      name: TalosTarget
+      type: string
+    - jsonPath: .status.currentKubernetesVersion
+      name: K8sCurrent
+      type: string
+    - jsonPath: .status.targetKubernetesVersion
+      name: K8sTarget
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -66,12 +72,20 @@ spec:
                 description: PatchPlanRef references the parent PatchPlan
                 type: string
               target:
-                description: Target defines the target Talos image specification
+                description: Target defines the target Talos and/or Kubernetes version
+                  specification
                 properties:
                   installer:
                     description: |-
                       Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
                       Required when source=factory
+                    type: string
+                  kubernetesVersion:
+                    description: |-
+                      KubernetesVersion is the desired Kubernetes version (e.g., v1.32.4). Omit to leave the
+                      Kubernetes version untouched and only upgrade TalosVersion.
+                      Requires ControlPlaneFirst and PatchControlPlane to be true, since kubelets must never run
+                      newer than the control plane they connect to.
                     type: string
                   schematicID:
                     description: |-
@@ -92,16 +106,21 @@ spec:
                     - factory
                     - ghcr
                     type: string
-                  version:
-                    description: Version is the Talos version (e.g., v1.12.1)
+                  talosVersion:
+                    description: |-
+                      TalosVersion is the desired Talos OS version (e.g., v1.12.1). Omit to leave the Talos
+                      version untouched and only upgrade KubernetesVersion.
                     type: string
-                required:
-                - version
                 type: object
             required:
             - nodeName
             - target
             type: object
+            x-kubernetes-validations:
+            - message: at least one of target.talosVersion or target.kubernetesVersion
+                must be set
+              rule: size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion)
+                > 0
           status:
             description: PatchJobStatus defines the observed state of PatchJob
             properties:
@@ -168,8 +187,12 @@ spec:
                   - type
                   type: object
                 type: array
-              currentVersion:
-                description: CurrentVersion is the Talos version before upgrade
+              currentKubernetesVersion:
+                description: CurrentKubernetesVersion is the kubelet version before
+                  upgrade, as reported by the node
+                type: string
+              currentTalosVersion:
+                description: CurrentTalosVersion is the Talos version before upgrade
                 type: string
               message:
                 description: Message contains human-readable message about current
@@ -182,7 +205,8 @@ spec:
                 - Draining
                 - Upgrading
                 - Rebooting
-                - Validating
+                - UpgradingKubernetes
+                - ValidatingKubernetes
                 - Completed
                 - Failed
                 type: string
@@ -190,9 +214,13 @@ spec:
                 description: StartTime is when the patch operation started
                 format: date-time
                 type: string
-              targetVersion:
-                description: TargetVersion is the extracted version tag for display
-                  (e.g., v1.11.5)
+              targetKubernetesVersion:
+                description: TargetKubernetesVersion is the extracted Kubernetes version
+                  tag for display (e.g., v1.32.4)
+                type: string
+              targetTalosVersion:
+                description: TargetTalosVersion is the extracted Talos version tag
+                  for display (e.g., v1.11.5)
                 type: string
             type: object
         type: object

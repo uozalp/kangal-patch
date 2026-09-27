@@ -30,10 +30,12 @@ type PatchJobReconciler struct {
 
 // Requeue intervals for different phases
 const (
-	requeueImmediate       = 1 * time.Millisecond // Requeue is deprecated in favor of a minimal RequeueAfter
-	requeueForDrainCheck   = 10 * time.Second     // checking if drain is complete
-	requeueForUpgradeStart = 5 * time.Second      // starting upgrade operation
-	requeueForRebootCheck  = 60 * time.Second     // checking if node is back online
+	requeueImmediate            = 1 * time.Millisecond // Requeue is deprecated in favor of a minimal RequeueAfter
+	requeueForDrainCheck        = 10 * time.Second     // checking if drain is complete
+	requeueForUpgradeStart      = 5 * time.Second      // starting upgrade operation
+	requeueForRebootCheck       = 60 * time.Second     // checking if node is back online
+	requeueForKubernetesUpgrade = 5 * time.Second      // starting the kubernetes upgrade patch
+	requeueForKubernetesCheck   = 15 * time.Second     // checking if kubelet/static pods report the new version
 )
 
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchjobs,verbs=get;list;watch;create;update;patch;delete
@@ -42,6 +44,12 @@ const (
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+
+// Well-known Talos static pod labels/namespace for control plane component readiness checks.
+const (
+	kubeSystemNamespace   = "kube-system"
+	controlPlaneComponent = "tier=control-plane"
+)
 
 func (r *PatchJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -77,6 +85,12 @@ func (r *PatchJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	case patchv1alpha1.PatchJobPhaseRebooting:
 		return r.waitForReboot(ctx, &patchJob)
 
+	case patchv1alpha1.PatchJobPhaseUpgradingKubernetes:
+		return r.startKubernetesUpgrade(ctx, &patchJob)
+
+	case patchv1alpha1.PatchJobPhaseValidatingKubernetes:
+		return r.waitForKubernetesUpgrade(ctx, &patchJob)
+
 	}
 
 	return ctrl.Result{}, nil
@@ -110,21 +124,37 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 		}
 	}()
 
-	// Get current version from node
+	// Get current Talos and Kubernetes versions from the node
 	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
 	}
 
-	currentVersion, err := talosClient.GetVersion(ctx, nodeAddr)
+	currentTalosVersion, err := talosClient.GetVersion(ctx, nodeAddr)
 	if err != nil {
-		return r.failJob(ctx, original, patchJob, "failed to get current version", err)
+		return r.failJob(ctx, original, patchJob, "failed to get current Talos version", err)
 	}
 
-	targetVersion := patchJob.Spec.Target.Version
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: patchJob.Spec.NodeName}, &node); err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get node", err)
+	}
+	currentKubernetesVersion := node.Status.NodeInfo.KubeletVersion
 
-	// Check if already at target version
-	if currentVersion == targetVersion {
+	targetTalosVersion := patchJob.Spec.Target.TalosVersion
+	targetKubernetesVersion := patchJob.Spec.Target.KubernetesVersion
+
+	talosNeedsUpgrade := targetTalosVersion != "" && currentTalosVersion != targetTalosVersion
+	kubernetesNeedsUpgrade := targetKubernetesVersion != "" && currentKubernetesVersion != targetKubernetesVersion
+
+	patchJob.Status.CurrentTalosVersion = currentTalosVersion
+	patchJob.Status.CurrentKubernetesVersion = currentKubernetesVersion
+	// Display the requested target, or the current value if that dimension isn't being changed
+	patchJob.Status.TargetTalosVersion = firstNonEmpty(targetTalosVersion, currentTalosVersion)
+	patchJob.Status.TargetKubernetesVersion = firstNonEmpty(targetKubernetesVersion, currentKubernetesVersion)
+
+	// Check if already at target version(s)
+	if !talosNeedsUpgrade && !kubernetesNeedsUpgrade {
 		// Ensure node is uncordoned in case it was cordoned from a previous run
 		drainer := drain.NewDrainer(r.Client)
 		if err := drainer.UncordonNode(ctx, patchJob.Spec.NodeName); err != nil {
@@ -139,8 +169,6 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 		}
 
 		patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseCompleted
-		patchJob.Status.CurrentVersion = currentVersion
-		patchJob.Status.TargetVersion = targetVersion
 		patchJob.Status.Message = "already at target version"
 
 		if err := r.patchStatus(ctx, original, patchJob); err != nil {
@@ -150,16 +178,21 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 
 		logger.Info("node already at target version",
 			"node", patchJob.Spec.NodeName,
-			"version", currentVersion)
+			"talosVersion", currentTalosVersion,
+			"kubernetesVersion", currentKubernetesVersion)
 
 		return ctrl.Result{}, nil
 	}
 
-	// Update status with initialization complete
-	patchJob.Status.Phase = patchv1alpha1.PatchJobPhasePending
-	patchJob.Status.CurrentVersion = currentVersion
-	patchJob.Status.TargetVersion = targetVersion
-	patchJob.Status.Message = "initialized, ready to drain"
+	// A Talos OS upgrade requires cordon/drain/reboot; a Kubernetes-only upgrade patches the
+	// kubelet (and control plane static pods) in place without disrupting the node.
+	if talosNeedsUpgrade {
+		patchJob.Status.Phase = patchv1alpha1.PatchJobPhasePending
+		patchJob.Status.Message = "initialized, ready to drain"
+	} else {
+		patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseUpgradingKubernetes
+		patchJob.Status.Message = "initialized, ready to upgrade kubernetes"
+	}
 
 	if err := r.patchStatus(ctx, original, patchJob); err != nil {
 		logger.Error(err, "failed to update status")
@@ -168,10 +201,20 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 
 	logger.Info("job initialized",
 		"node", patchJob.Spec.NodeName,
-		"currentVersion", currentVersion,
-		"targetVersion", targetVersion)
+		"currentTalosVersion", currentTalosVersion,
+		"targetTalosVersion", targetTalosVersion,
+		"currentKubernetesVersion", currentKubernetesVersion,
+		"targetKubernetesVersion", targetKubernetesVersion)
 
 	return ctrl.Result{RequeueAfter: requeueImmediate}, nil
+}
+
+// firstNonEmpty returns a if it is non-empty, otherwise b.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // failJob transitions a PatchJob to failed state and updates status
@@ -382,7 +425,7 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 
 	logger.Info("upgrade initiated",
 		"node", patchJob.Spec.NodeName,
-		"targetVersion", patchJob.Status.TargetVersion)
+		"targetTalosVersion", patchJob.Status.TargetTalosVersion)
 
 	return ctrl.Result{RequeueAfter: requeueForRebootCheck}, nil
 }
@@ -423,13 +466,15 @@ func (r *PatchJobReconciler) waitForReboot(ctx context.Context, patchJob *patchv
 	}
 
 	// Check if upgrade succeeded
-	if currentVersion != patchJob.Status.TargetVersion {
+	if currentVersion != patchJob.Status.TargetTalosVersion {
 		logger.Info("node responsive but upgrade not complete yet",
 			"node", patchJob.Spec.NodeName,
 			"currentVersion", currentVersion,
-			"targetVersion", patchJob.Status.TargetVersion)
+			"targetTalosVersion", patchJob.Status.TargetTalosVersion)
 		return ctrl.Result{RequeueAfter: requeueForRebootCheck}, nil
 	}
+
+	patchJob.Status.CurrentTalosVersion = currentVersion
 
 	// Uncordon the node
 	drainer := drain.NewDrainer(r.Client)
@@ -437,20 +482,177 @@ func (r *PatchJobReconciler) waitForReboot(ctx context.Context, patchJob *patchv
 		return r.failJob(ctx, original, patchJob, "failed to uncordon node", err)
 	}
 
-	// Move directly to completed phase
-	patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseCompleted
-	patchJob.Status.Message = "upgrade completed successfully"
+	// A Kubernetes upgrade may also have been requested alongside the Talos OS upgrade
+	if patchJob.Spec.Target.KubernetesVersion != "" && patchJob.Status.CurrentKubernetesVersion != patchJob.Spec.Target.KubernetesVersion {
+		patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseUpgradingKubernetes
+		patchJob.Status.Message = "talos upgrade completed, ready to upgrade kubernetes"
+	} else {
+		patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseCompleted
+		patchJob.Status.Message = "upgrade completed successfully"
+	}
 
 	if err := r.patchStatus(ctx, original, patchJob); err != nil {
 		logger.Error(err, "failed to update status")
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("upgrade completed successfully",
+	logger.Info("talos upgrade completed successfully",
 		"node", patchJob.Spec.NodeName,
 		"version", currentVersion)
 
+	return ctrl.Result{RequeueAfter: requeueImmediate}, nil
+}
+
+// startKubernetesUpgrade patches the kubelet (and, for control plane nodes, the control plane
+// static pod images) to the target Kubernetes version. Unlike the Talos OS upgrade, this does not
+// require a drain/reboot cycle.
+func (r *PatchJobReconciler) startKubernetesUpgrade(ctx context.Context, patchJob *patchv1alpha1.PatchJob) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	original := patchJob.DeepCopy()
+
+	talosConfig, err := r.getTalosConfig(ctx, patchJob)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get Talos config", err)
+	}
+
+	talosClient, err := talos.NewClient(talosConfig)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to create Talos client", err)
+	}
+	defer func() {
+		if cerr := talosClient.Close(); cerr != nil {
+			logger.Error(cerr, "failed to close Talos client")
+		}
+	}()
+
+	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
+	}
+
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: patchJob.Spec.NodeName}, &node); err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get node", err)
+	}
+
+	kubernetesVersion := patchJob.Spec.Target.KubernetesVersion
+
+	if nodeutil.IsControlPlane(&node) {
+		if err := talosClient.PatchControlPlaneVersion(ctx, nodeAddr,
+			patchutil.BuildAPIServerImage(kubernetesVersion),
+			patchutil.BuildControllerManagerImage(kubernetesVersion),
+			patchutil.BuildSchedulerImage(kubernetesVersion),
+		); err != nil {
+			return r.failJob(ctx, original, patchJob, "failed to patch control plane components", err)
+		}
+	}
+
+	if err := talosClient.PatchKubeletVersion(ctx, nodeAddr, patchutil.BuildKubeletImage(kubernetesVersion)); err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to patch kubelet version", err)
+	}
+
+	patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseValidatingKubernetes
+	patchJob.Status.Message = "kubernetes upgrade patch applied, waiting for rollout"
+
+	if err := r.patchStatus(ctx, original, patchJob); err != nil {
+		logger.Error(err, "failed to update status")
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("kubernetes upgrade initiated",
+		"node", patchJob.Spec.NodeName,
+		"targetKubernetesVersion", kubernetesVersion)
+
+	return ctrl.Result{RequeueAfter: requeueForKubernetesCheck}, nil
+}
+
+// waitForKubernetesUpgrade polls the node until the kubelet reports the target version and, for
+// control plane nodes, the control plane static pods are running with the target images.
+func (r *PatchJobReconciler) waitForKubernetesUpgrade(ctx context.Context, patchJob *patchv1alpha1.PatchJob) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	original := patchJob.DeepCopy()
+
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: patchJob.Spec.NodeName}, &node); err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get node", err)
+	}
+
+	kubernetesVersion := patchJob.Spec.Target.KubernetesVersion
+
+	if node.Status.NodeInfo.KubeletVersion != kubernetesVersion {
+		logger.Info("waiting for kubelet to report target version",
+			"node", patchJob.Spec.NodeName,
+			"currentKubernetesVersion", node.Status.NodeInfo.KubeletVersion,
+			"targetKubernetesVersion", kubernetesVersion)
+		return ctrl.Result{RequeueAfter: requeueForKubernetesCheck}, nil
+	}
+
+	if nodeutil.IsControlPlane(&node) {
+		ready, err := r.controlPlaneStaticPodsReady(ctx, patchJob.Spec.NodeName, kubernetesVersion)
+		if err != nil {
+			return r.failJob(ctx, original, patchJob, "failed to check control plane static pods", err)
+		}
+		if !ready {
+			logger.Info("waiting for control plane static pods to roll out", "node", patchJob.Spec.NodeName)
+			return ctrl.Result{RequeueAfter: requeueForKubernetesCheck}, nil
+		}
+	}
+
+	patchJob.Status.CurrentKubernetesVersion = kubernetesVersion
+	patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseCompleted
+	patchJob.Status.Message = "kubernetes upgrade completed successfully"
+
+	if err := r.patchStatus(ctx, original, patchJob); err != nil {
+		logger.Error(err, "failed to update status")
+		return ctrl.Result{}, err
+	}
+
+	logger.Info("kubernetes upgrade completed successfully",
+		"node", patchJob.Spec.NodeName,
+		"version", kubernetesVersion)
+
 	return ctrl.Result{}, nil
+}
+
+// controlPlaneStaticPodsReady checks whether the kube-apiserver, kube-controller-manager and
+// kube-scheduler static pods on the given node are running the target image and are ready.
+func (r *PatchJobReconciler) controlPlaneStaticPodsReady(ctx context.Context, nodeName, kubernetesVersion string) (bool, error) {
+	wantImages := map[string]string{
+		"kube-apiserver":          patchutil.BuildAPIServerImage(kubernetesVersion),
+		"kube-controller-manager": patchutil.BuildControllerManagerImage(kubernetesVersion),
+		"kube-scheduler":          patchutil.BuildSchedulerImage(kubernetesVersion),
+	}
+
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList,
+		client.InNamespace(kubeSystemNamespace),
+		client.MatchingFields{"spec.nodeName": nodeName},
+	); err != nil {
+		return false, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
+	}
+
+	found := make(map[string]bool, len(wantImages))
+
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		component, ok := pod.Labels["component"]
+		if !ok {
+			continue
+		}
+		wantImage, ok := wantImages[component]
+		if !ok {
+			continue
+		}
+
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Image == wantImage && cs.Ready {
+				found[component] = true
+				break
+			}
+		}
+	}
+
+	return len(found) == len(wantImages), nil
 }
 
 // deletePatchJobLease deletes the scheduling lease associated with this PatchJob.
