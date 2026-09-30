@@ -31,6 +31,8 @@ type PatchPlanReconciler struct {
 	Namespace string
 	// Discovery is used for the Kubernetes API health check during preflight.
 	Discovery discovery.DiscoveryInterface
+	// Releases lists upstream Talos releases for auto-update templates.
+	Releases releaseLister
 }
 
 type JobCounts struct {
@@ -77,6 +79,10 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		logger.Error(err, "unable to fetch PatchPlan")
 		return ctrl.Result{}, err
+	}
+
+	if patchPlan.IsAutoUpdateTemplate() {
+		return r.reconcileAutoUpdate(ctx, &patchPlan)
 	}
 
 	// Clean up expired leases first
@@ -270,6 +276,7 @@ func (r *PatchPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&patchv1alpha1.PatchPlan{}).
+		Owns(&patchv1alpha1.PatchPlan{}). // child plans wake their auto-update template
 		Owns(&patchv1alpha1.PatchJob{}).
 		Complete(r)
 }

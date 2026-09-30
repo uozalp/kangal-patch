@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -22,6 +24,7 @@ import (
 
 	kangalpatchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/controllers"
+	"github.com/uozalp/kangal-patch/internal/release"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -90,6 +93,7 @@ func main() {
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,
 		Discovery: discoveryClient,
+		Releases:  &release.Fetcher{HTTPClient: &http.Client{Timeout: 30 * time.Second}},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PatchPlan")
 		os.Exit(1)

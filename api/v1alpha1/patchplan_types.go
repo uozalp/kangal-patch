@@ -5,9 +5,67 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// AutoUpdateSpec turns a PatchPlan into a template: instead of patching nodes itself, the plan
+// watches for new Talos releases and creates a child PatchPlan with talosVersion set for each one.
+type AutoUpdateSpec struct {
+	// Enabled turns the PatchPlan into an auto-update template.
+	Enabled bool `json:"enabled"`
+
+	// Allow is the largest version change applied automatically, relative to the lowest Talos version
+	// running on the selected nodes. "patch" only moves within the current minor (1.13.2 -> 1.13.5);
+	// "minor" also allows stepping to the next minor (1.12.6 -> 1.13.x), never skipping one.
+	// +kubebuilder:validation:Enum=patch;minor
+	// +kubebuilder:default=patch
+	// +optional
+	Allow string `json:"allow,omitempty"`
+
+	// CheckInterval is how often to look for a new release (minimum 1m).
+	// +kubebuilder:default="1h"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
+	// +optional
+	CheckInterval metav1.Duration `json:"checkInterval,omitempty"`
+
+	// MinReleaseAge is how old a release must be before it is used, so a release that is pulled or
+	// hot-fixed right after publication is never rolled out.
+	// +kubebuilder:default="0s"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
+	// +optional
+	MinReleaseAge metav1.Duration `json:"minReleaseAge,omitempty"`
+}
+
+// AutoUpdateStatus reports the state of the release watcher of an auto-update template.
+type AutoUpdateStatus struct {
+	// LastCheckTime is when the releases were last evaluated.
+	// +optional
+	LastCheckTime *metav1.Time `json:"lastCheckTime,omitempty"`
+
+	// CurrentVersion is the lowest Talos version found on the selected nodes.
+	// +optional
+	CurrentVersion string `json:"currentVersion,omitempty"`
+
+	// LatestVersion is the newest stable upstream release, regardless of age or the allow setting.
+	// +optional
+	LatestVersion string `json:"latestVersion,omitempty"`
+
+	// PendingVersion is a newer release that is still younger than minReleaseAge.
+	// +optional
+	PendingVersion string `json:"pendingVersion,omitempty"`
+
+	// LastCreatedPlan is the name of the most recent child PatchPlan.
+	// +optional
+	LastCreatedPlan string `json:"lastCreatedPlan,omitempty"`
+}
+
 // TargetSpec defines the target Talos and/or Kubernetes version specification.
-// At least one of TalosVersion or KubernetesVersion must be set.
+// At least one of TalosVersion, KubernetesVersion or an enabled AutoUpdate must be set.
 type TargetSpec struct {
+	// AutoUpdate makes this PatchPlan a template that creates a child PatchPlan per Talos release.
+	// TalosVersion and KubernetesVersion must be omitted when it is enabled.
+	// +optional
+	AutoUpdate *AutoUpdateSpec `json:"autoUpdate,omitempty"`
+
 	// TalosVersion is the desired Talos OS version (e.g., v1.12.1). Omit to leave the Talos
 	// version untouched and only upgrade KubernetesVersion.
 	// +optional
@@ -43,7 +101,8 @@ type TargetSpec struct {
 }
 
 // PatchPlanSpec defines the desired state of PatchPlan
-// +kubebuilder:validation:XValidation:rule="has(self.target.talosVersion) || has(self.target.kubernetesVersion)",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
+// +kubebuilder:validation:XValidation:rule="has(self.target.talosVersion) || has(self.target.kubernetesVersion) || (has(self.target.autoUpdate) && self.target.autoUpdate.enabled)",message="at least one of target.talosVersion, target.kubernetesVersion or an enabled target.autoUpdate must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled) || (!has(self.target.talosVersion) && !has(self.target.kubernetesVersion))",message="target.talosVersion and target.kubernetesVersion must be omitted when target.autoUpdate is enabled"
 // +kubebuilder:validation:XValidation:rule="!has(self.target.kubernetesVersion) || self.controlPlaneFirst",message="controlPlaneFirst must be true when target.kubernetesVersion is set"
 // +kubebuilder:validation:XValidation:rule="!has(self.target.kubernetesVersion) || self.patchControlPlane",message="patchControlPlane must be true when target.kubernetesVersion is set"
 type PatchPlanSpec struct {
@@ -183,8 +242,12 @@ type SecretReference struct {
 // PatchPlanStatus defines the observed state of PatchPlan
 type PatchPlanStatus struct {
 	// Phase represents the current phase of the patching operation
-	// +kubebuilder:validation:Enum=Pending;Preflighting;InProgress;Paused;Cancelled;Completed;Failed
+	// +kubebuilder:validation:Enum=Pending;Preflighting;InProgress;Paused;Cancelled;Completed;Failed;Watching
 	Phase PatchPhase `json:"phase,omitempty"`
+
+	// AutoUpdate reports the release watcher state. Only set on auto-update templates.
+	// +optional
+	AutoUpdate *AutoUpdateStatus `json:"autoUpdate,omitempty"`
 
 	// TargetTalosVersion is the display Talos version extracted from spec.target
 	// +optional
@@ -244,7 +307,18 @@ const (
 	PatchPhaseCancelled    PatchPhase = "Cancelled"
 	PatchPhaseCompleted    PatchPhase = "Completed"
 	PatchPhaseFailed       PatchPhase = "Failed"
+	// PatchPhaseWatching is the phase of an auto-update template that is waiting for new releases.
+	PatchPhaseWatching PatchPhase = "Watching"
 )
+
+// LabelParentPlan is set on child PatchPlans created by an auto-update template and holds the
+// template's name.
+const LabelParentPlan = "kangalpatch.ozalp.dk/parent"
+
+// IsAutoUpdateTemplate reports whether the plan only watches for releases and creates child plans.
+func (p *PatchPlan) IsAutoUpdateTemplate() bool {
+	return p.Spec.Target.AutoUpdate != nil && p.Spec.Target.AutoUpdate.Enabled
+}
 
 // ConditionPreflightPassed is the PatchPlan condition type reporting the result of the checks
 // that run once before the first PatchJob is created.

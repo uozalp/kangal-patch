@@ -75,6 +75,41 @@ spec:
                 description: Target defines the target Talos and/or Kubernetes version
                   specification
                 properties:
+                  autoUpdate:
+                    description: |-
+                      AutoUpdate makes this PatchPlan a template that creates a child PatchPlan per Talos release.
+                      TalosVersion and KubernetesVersion must be omitted when it is enabled.
+                    properties:
+                      allow:
+                        default: patch
+                        description: |-
+                          Allow is the largest version change applied automatically, relative to the lowest Talos version
+                          running on the selected nodes. "patch" only moves within the current minor (1.13.2 -> 1.13.5);
+                          "minor" also allows stepping to the next minor (1.12.6 -> 1.13.x), never skipping one.
+                        enum:
+                        - patch
+                        - minor
+                        type: string
+                      checkInterval:
+                        default: 1h
+                        description: CheckInterval is how often to look for a new
+                          release (minimum 1m).
+                        pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
+                        type: string
+                      enabled:
+                        description: Enabled turns the PatchPlan into an auto-update
+                          template.
+                        type: boolean
+                      minReleaseAge:
+                        default: 0s
+                        description: |-
+                          MinReleaseAge is how old a release must be before it is used, so a release that is pulled or
+                          hot-fixed right after publication is never rolled out.
+                        pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
+                        type: string
+                    required:
+                    - enabled
+                    type: object
                   installer:
                     description: |-
                       Installer specifies the installer type (e.g., "aws", "azure", "nocloud")

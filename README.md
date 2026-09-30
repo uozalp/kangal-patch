@@ -343,13 +343,46 @@ preflight checks (see [Preflight Checks](#preflight-checks)) reject a `target.ku
 that's outside the range in a built-in copy of this table. Talos versions newer than the built-in
 table are not checked.
 
+### Auto-Update
+
+Instead of naming a Talos version, a PatchPlan can follow the upstream
+[siderolabs/talos releases](https://github.com/siderolabs/talos/releases). With
+`target.autoUpdate.enabled: true` the PatchPlan is a template (phase `Watching`) that never patches
+nodes itself. Every `checkInterval` it creates a child PatchPlan named `<template>-<version>` with
+`target.talosVersion` set and the rest of the spec copied, and that child runs the normal flow
+(preflight, `PatchJobs`). Each release therefore has its own PatchPlan and history.
+
+```yaml
+spec:
+  target:
+    autoUpdate:
+      enabled: true
+      allow: patch          # patch (default) | minor
+      checkInterval: 30m    # default 1h, minimum 1m
+      minReleaseAge: 72h    # default 0s
+```
+
+- The current version is the lowest Talos version across the selected nodes. `allow: patch` only
+  moves within the current minor; `allow: minor` also steps to the next minor, never skipping one.
+- Only stable GitHub releases are considered, and a release must be at least `minReleaseAge` old.
+- No new child is created while an earlier child is not `Completed` (including `Failed`); delete or
+  fix it to resume. Children are garbage-collected with the template.
+- `talosVersion` and `kubernetesVersion` must be omitted on a template. Releases are read
+  anonymously from the GitHub API.
+- `status.autoUpdate` shows the last check, the current, latest and pending (too young) versions,
+  and the last created plan.
+
+```bash
+kubectl get patchplan
+```
+
 ### Preflight Checks
 
 Before the first `PatchJob` of a `PatchPlan` is created, the controller runs these checks once
 (phase `Preflighting`) and schedules nothing until all pass:
 
 - the node selection resolves to at least one node
-- no other `InProgress` or `Paused` PatchPlan targets any of the same nodes
+- no other `InProgress` or `Paused` PatchPlan targets any of the same nodes (auto-update templates are ignored)
 - the Kubernetes API reports ready (`/readyz`)
 - the Talos credentials work against the configured endpoints, and every selected node answers on the Talos API
 - the Talos installer image exists in the registry for nodes that still need the upgrade
@@ -386,7 +419,8 @@ kubectl get patchplan simple-upgrade -o jsonpath='{.status.conditions}' | jq
 
 #### Target Spec
 
-At least one of `talosVersion`/`kubernetesVersion` must be set; both can be set to upgrade both
+At least one of `talosVersion`/`kubernetesVersion` (or an enabled `autoUpdate`) must be set; both
+can be set to upgrade both
 in the same PatchPlan. Setting `kubernetesVersion` requires `controlPlaneFirst` and
 `patchControlPlane` to be `true`, since a kubelet must never run newer than the control plane it
 connects to.
@@ -399,6 +433,10 @@ connects to.
 | `installer` | string | Installer type (e.g., "aws", "nocloud"). Required when source=factory | - |
 | `schematicID` | string | Talos factory schematic ID. If omitted with source=factory, each node's currently running schematic is used | - |
 | `secureBoot` | bool | Enable secure boot. Only applicable when source=factory | `false` |
+| `autoUpdate.enabled` | bool | Make the plan an auto-update template, see [Auto-Update](#auto-update) | - |
+| `autoUpdate.allow` | string | Largest automatic change: `patch` or `minor` | `patch` |
+| `autoUpdate.checkInterval` | duration | How often to check for releases (min 1m) | `1h` |
+| `autoUpdate.minReleaseAge` | duration | Minimum age of a release before it is used | `0s` |
 
 #### Maintenance Spec
 

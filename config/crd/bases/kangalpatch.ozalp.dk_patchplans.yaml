@@ -204,6 +204,41 @@ spec:
                 description: Target defines the target Talos and/or Kubernetes version
                   specification
                 properties:
+                  autoUpdate:
+                    description: |-
+                      AutoUpdate makes this PatchPlan a template that creates a child PatchPlan per Talos release.
+                      TalosVersion and KubernetesVersion must be omitted when it is enabled.
+                    properties:
+                      allow:
+                        default: patch
+                        description: |-
+                          Allow is the largest version change applied automatically, relative to the lowest Talos version
+                          running on the selected nodes. "patch" only moves within the current minor (1.13.2 -> 1.13.5);
+                          "minor" also allows stepping to the next minor (1.12.6 -> 1.13.x), never skipping one.
+                        enum:
+                        - patch
+                        - minor
+                        type: string
+                      checkInterval:
+                        default: 1h
+                        description: CheckInterval is how often to look for a new
+                          release (minimum 1m).
+                        pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
+                        type: string
+                      enabled:
+                        description: Enabled turns the PatchPlan into an auto-update
+                          template.
+                        type: boolean
+                      minReleaseAge:
+                        default: 0s
+                        description: |-
+                          MinReleaseAge is how old a release must be before it is used, so a release that is pulled or
+                          hot-fixed right after publication is never rolled out.
+                        pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
+                        type: string
+                    required:
+                    - enabled
+                    type: object
                   installer:
                     description: |-
                       Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
@@ -245,9 +280,14 @@ spec:
             - target
             type: object
             x-kubernetes-validations:
-            - message: at least one of target.talosVersion or target.kubernetesVersion
-                must be set
+            - message: at least one of target.talosVersion, target.kubernetesVersion
+                or an enabled target.autoUpdate must be set
               rule: has(self.target.talosVersion) || has(self.target.kubernetesVersion)
+                || (has(self.target.autoUpdate) && self.target.autoUpdate.enabled)
+            - message: target.talosVersion and target.kubernetesVersion must be omitted
+                when target.autoUpdate is enabled
+              rule: '!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled)
+                || (!has(self.target.talosVersion) && !has(self.target.kubernetesVersion))'
             - message: controlPlaneFirst must be true when target.kubernetesVersion
                 is set
               rule: '!has(self.target.kubernetesVersion) || self.controlPlaneFirst'
@@ -257,6 +297,31 @@ spec:
           status:
             description: PatchPlanStatus defines the observed state of PatchPlan
             properties:
+              autoUpdate:
+                description: AutoUpdate reports the release watcher state. Only set
+                  on auto-update templates.
+                properties:
+                  currentVersion:
+                    description: CurrentVersion is the lowest Talos version found
+                      on the selected nodes.
+                    type: string
+                  lastCheckTime:
+                    description: LastCheckTime is when the releases were last evaluated.
+                    format: date-time
+                    type: string
+                  lastCreatedPlan:
+                    description: LastCreatedPlan is the name of the most recent child
+                      PatchPlan.
+                    type: string
+                  latestVersion:
+                    description: LatestVersion is the newest stable upstream release,
+                      regardless of age or the allow setting.
+                    type: string
+                  pendingVersion:
+                    description: PendingVersion is a newer release that is still younger
+                      than minReleaseAge.
+                    type: string
+                type: object
               completedNodes:
                 default: 0
                 description: CompletedNodes is the number of nodes successfully patched
@@ -355,6 +420,7 @@ spec:
                 - Cancelled
                 - Completed
                 - Failed
+                - Watching
                 type: string
               startTime:
                 description: StartTime is when the patching operation started

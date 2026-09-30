@@ -1,0 +1,36 @@
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: homelab
+spec:
+  # Template: creates a child PatchPlan (homelab-<version>) for each new Talos release
+  target:
+    autoUpdate:
+      enabled: true
+      allow: patch          # patch | minor
+      checkInterval: 30m
+      minReleaseAge: 72h    # wait 3 days after a release before using it
+    # Copied to every child plan; must match how your nodes were installed.
+    # Without schematicID each node keeps the schematic it currently runs.
+    source: factory
+    installer: nocloud
+    secureBoot: true
+
+  # Everything below is copied to the child plans
+  nodeSelector:
+    kubernetes.io/os: linux
+
+  patchControlPlane: true
+  patchWorkers: true
+  controlPlaneFirst: true
+  maxConcurrency: 1
+  maxFailures: 1
+  delayBetweenNodes: "5m"
+  respectPDBs: true
+  drainTimeout: "5m"
+  rebootTimeout: "10m"
+
+  talosConfig:
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch

@@ -39,6 +39,7 @@ const (
 const (
 	requeueWhenPreflightFailed    = time.Minute // re-run so fixing the cause (e.g. a Secret) self-heals
 	preflightCallTimeout          = 15 * time.Second
+	preflightImageCheckTimeout    = 2 * time.Minute // factory.talos.dev builds an image on its first request
 	preflightNodeProbeConcurrency = 10
 	preflightMaxNamesInMessages   = 20
 )
@@ -184,7 +185,7 @@ func (r *PatchPlanReconciler) checkConflictingPlans(ctx context.Context, patchPl
 	conflicts := 0
 	for i := range plans.Items {
 		other := &plans.Items[i]
-		if other.Name == patchPlan.Name || !other.DeletionTimestamp.IsZero() {
+		if other.Name == patchPlan.Name || !other.DeletionTimestamp.IsZero() || other.IsAutoUpdateTemplate() {
 			continue
 		}
 		if other.Status.Phase != patchv1alpha1.PatchPhaseInProgress && other.Status.Phase != patchv1alpha1.PatchPhasePaused {
@@ -327,6 +328,7 @@ func checkTalosImages(ctx context.Context, target patchv1alpha1.TargetSpec, prob
 	}
 
 	images := map[string][]string{}
+	invalid := false
 	for _, p := range probes {
 		if p.version == target.TalosVersion {
 			continue
@@ -334,6 +336,7 @@ func checkTalosImages(ctx context.Context, target patchv1alpha1.TargetSpec, prob
 		image, err := patchutil.BuildInstallerImage(target, p.schematicID)
 		if err != nil {
 			res.fail(reasonInvalidTarget, "node %s: %v", p.node, err)
+			invalid = true
 			continue
 		}
 		images[image] = append(images[image], p.node)
@@ -346,11 +349,13 @@ func checkTalosImages(ctx context.Context, target patchv1alpha1.TargetSpec, prob
 	slices.Sort(imageNames)
 
 	if len(imageNames) == 0 {
-		res.pass("no node needs the Talos upgrade to %s", target.TalosVersion)
+		if !invalid {
+			res.pass("no node needs the Talos upgrade to %s", target.TalosVersion)
+		}
 		return
 	}
 
-	checker := registry.Checker{HTTPClient: &http.Client{Timeout: preflightCallTimeout}}
+	checker := registry.Checker{HTTPClient: &http.Client{Timeout: preflightImageCheckTimeout}}
 	for _, image := range imageNames {
 		err := checker.Exists(ctx, image)
 		switch {
