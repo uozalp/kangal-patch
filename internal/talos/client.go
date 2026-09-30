@@ -12,6 +12,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
+	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	kangalpatchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 )
 
@@ -68,6 +69,34 @@ func (c *Client) GetVersion(ctx context.Context, nodeName string) (string, error
 	}
 
 	return "", fmt.Errorf("no version response received from node %s", nodeName)
+}
+
+// GetSchematicID returns the factory schematic ID the node is currently running, or an empty
+// string if the node was not installed from a factory image.
+func (c *Client) GetSchematicID(ctx context.Context, nodeName string) (string, error) {
+	if c.client == nil {
+		return "", fmt.Errorf("client not initialized")
+	}
+
+	ctx = client.WithNode(ctx, nodeName)
+
+	items, err := c.client.COSI.List(ctx, resource.NewMetadata(runtimeres.NamespaceName, runtimeres.ExtensionStatusType, "", resource.VersionUndefined))
+	if err != nil {
+		return "", fmt.Errorf("failed to list extensions on node %s: %w", nodeName, err)
+	}
+
+	// Talos reports the schematic as a pseudo-extension named "schematic" whose version is the ID.
+	for _, item := range items.Items {
+		ext, ok := item.(*runtimeres.ExtensionStatus)
+		if !ok {
+			continue
+		}
+		if spec := ext.TypedSpec(); spec.Metadata.Name == "schematic" {
+			return spec.Metadata.Version, nil
+		}
+	}
+
+	return "", nil
 }
 
 // Upgrade initiates an OS upgrade on a node

@@ -89,8 +89,8 @@ spec:
                     type: string
                   schematicID:
                     description: |-
-                      SchematicID is the Talos factory schematic ID
-                      Required when source=factory
+                      SchematicID is the Talos factory schematic ID.
+                      When source=factory and this is omitted, each node keeps the schematic it is currently running.
                     type: string
                   secureBoot:
                     default: false

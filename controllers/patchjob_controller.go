@@ -398,15 +398,24 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 		}
 	}()
 
-	// Build the installer image URL
-	installerImage, err := patchutil.BuildInstallerImage(patchJob.Spec.Target)
-	if err != nil {
-		return r.failJob(ctx, original, patchJob, "failed to build installer image", err)
-	}
-
 	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
+	}
+
+	target := patchJob.Spec.Target
+	nodeSchematicID := ""
+	if target.Source == "factory" && target.SchematicID == "" {
+		nodeSchematicID, err = talosClient.GetSchematicID(ctx, nodeAddr)
+		if err != nil {
+			return r.failJob(ctx, original, patchJob, "failed to detect node schematic ID", err)
+		}
+	}
+
+	// Build the installer image URL
+	installerImage, err := patchutil.BuildInstallerImage(target, nodeSchematicID)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to build installer image", err)
 	}
 
 	// Initiate upgrade

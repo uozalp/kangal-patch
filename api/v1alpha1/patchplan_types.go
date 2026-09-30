@@ -30,8 +30,8 @@ type TargetSpec struct {
 	// +optional
 	Installer string `json:"installer,omitempty"`
 
-	// SchematicID is the Talos factory schematic ID
-	// Required when source=factory
+	// SchematicID is the Talos factory schematic ID.
+	// When source=factory and this is omitted, each node keeps the schematic it is currently running.
 	// +optional
 	SchematicID string `json:"schematicID,omitempty"`
 

@@ -7,7 +7,8 @@ import (
 )
 
 // BuildInstallerImage constructs the full Talos installer image reference from a TargetSpec.
-func BuildInstallerImage(t patchv1alpha1.TargetSpec) (string, error) {
+// nodeSchematicID is used when the target does not specify a schematicID.
+func BuildInstallerImage(t patchv1alpha1.TargetSpec, nodeSchematicID string) (string, error) {
 	if t.Source == "ghcr" || t.Source == "" {
 		return fmt.Sprintf(
 			"ghcr.io/siderolabs/installer:%s",
@@ -15,8 +16,12 @@ func BuildInstallerImage(t patchv1alpha1.TargetSpec) (string, error) {
 		), nil
 	}
 
-	if t.SchematicID == "" {
-		return "", fmt.Errorf("schematicID is required when source=factory")
+	schematicID := t.SchematicID
+	if schematicID == "" {
+		schematicID = nodeSchematicID
+	}
+	if schematicID == "" {
+		return "", fmt.Errorf("schematicID is required when source=factory and the node's current schematic is unknown")
 	}
 
 	if t.Installer == "" {
@@ -32,7 +37,7 @@ func BuildInstallerImage(t patchv1alpha1.TargetSpec) (string, error) {
 		"factory.talos.dev/%s-installer%s/%s:%s",
 		t.Installer,
 		suffix,
-		t.SchematicID,
+		schematicID,
 		t.TalosVersion,
 	), nil
 }

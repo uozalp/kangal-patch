@@ -124,7 +124,7 @@ target:
   talosVersion: v1.11.6               # The Talos version tag
   source: factory                     # Use factory.talos.dev (vs ghcr)
   installer: nocloud                  # The installer type (aws, azure, nocloud, etc.)
-  schematicID: 95d432d6bb...          # The factory schematic hash
+  schematicID: 95d432d6bb...          # Optional: omit to keep each node's current schematic
   secureBoot: true                    # Adds -secureboot suffix to installer
 ```
 
@@ -375,7 +375,7 @@ connects to.
 | `kubernetesVersion` | string | Kubernetes version (e.g., v1.32.4). Patches the kubelet and, on control plane nodes, the kube-apiserver/controller-manager/scheduler static pods and the cluster-wide kube-proxy DaemonSet. No drain/reboot required | - |
 | `source` | string | Image source: "ghcr" or "factory" | `ghcr` |
 | `installer` | string | Installer type (e.g., "aws", "nocloud"). Required when source=factory | - |
-| `schematicID` | string | Talos factory schematic ID. Required when source=factory | - |
+| `schematicID` | string | Talos factory schematic ID. If omitted with source=factory, each node's currently running schematic is used | - |
 | `secureBoot` | bool | Enable secure boot. Only applicable when source=factory | `false` |
 
 #### Maintenance Spec
