@@ -43,9 +43,9 @@ type TargetSpec struct {
 }
 
 // PatchPlanSpec defines the desired state of PatchPlan
-// +kubebuilder:validation:XValidation:rule="size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion) > 0",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
-// +kubebuilder:validation:XValidation:rule="size(self.target.kubernetesVersion) == 0 || self.controlPlaneFirst",message="controlPlaneFirst must be true when target.kubernetesVersion is set"
-// +kubebuilder:validation:XValidation:rule="size(self.target.kubernetesVersion) == 0 || self.patchControlPlane",message="patchControlPlane must be true when target.kubernetesVersion is set"
+// +kubebuilder:validation:XValidation:rule="has(self.target.talosVersion) || has(self.target.kubernetesVersion)",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.target.kubernetesVersion) || self.controlPlaneFirst",message="controlPlaneFirst must be true when target.kubernetesVersion is set"
+// +kubebuilder:validation:XValidation:rule="!has(self.target.kubernetesVersion) || self.patchControlPlane",message="patchControlPlane must be true when target.kubernetesVersion is set"
 type PatchPlanSpec struct {
 	// Target defines the target Talos and/or Kubernetes version specification
 	// +kubebuilder:validation:Required
@@ -183,7 +183,7 @@ type SecretReference struct {
 // PatchPlanStatus defines the observed state of PatchPlan
 type PatchPlanStatus struct {
 	// Phase represents the current phase of the patching operation
-	// +kubebuilder:validation:Enum=Pending;InProgress;Paused;Cancelled;Completed;Failed
+	// +kubebuilder:validation:Enum=Pending;Preflighting;InProgress;Paused;Cancelled;Completed;Failed
 	Phase PatchPhase `json:"phase,omitempty"`
 
 	// TargetTalosVersion is the display Talos version extracted from spec.target
@@ -237,13 +237,18 @@ type PatchPlanStatus struct {
 type PatchPhase string
 
 const (
-	PatchPhasePending    PatchPhase = "Pending"
-	PatchPhaseInProgress PatchPhase = "InProgress"
-	PatchPhasePaused     PatchPhase = "Paused"
-	PatchPhaseCancelled  PatchPhase = "Cancelled"
-	PatchPhaseCompleted  PatchPhase = "Completed"
-	PatchPhaseFailed     PatchPhase = "Failed"
+	PatchPhasePending      PatchPhase = "Pending"
+	PatchPhasePreflighting PatchPhase = "Preflighting"
+	PatchPhaseInProgress   PatchPhase = "InProgress"
+	PatchPhasePaused       PatchPhase = "Paused"
+	PatchPhaseCancelled    PatchPhase = "Cancelled"
+	PatchPhaseCompleted    PatchPhase = "Completed"
+	PatchPhaseFailed       PatchPhase = "Failed"
 )
+
+// ConditionPreflightPassed is the PatchPlan condition type reporting the result of the checks
+// that run once before the first PatchJob is created.
+const ConditionPreflightPassed = "PreflightPassed"
 
 // +kubebuilder:object:root=true
 

@@ -13,7 +13,7 @@ const (
 )
 
 // PatchJobSpec defines the desired state of PatchJob
-// +kubebuilder:validation:XValidation:rule="size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion) > 0",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
+// +kubebuilder:validation:XValidation:rule="has(self.target.talosVersion) || has(self.target.kubernetesVersion)",message="at least one of target.talosVersion or target.kubernetesVersion must be set"
 type PatchJobSpec struct {
 	// NodeName is the name of the node to patch
 	// +kubebuilder:validation:Required

@@ -119,8 +119,7 @@ spec:
             x-kubernetes-validations:
             - message: at least one of target.talosVersion or target.kubernetesVersion
                 must be set
-              rule: size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion)
-                > 0
+              rule: has(self.target.talosVersion) || has(self.target.kubernetesVersion)
           status:
             description: PatchJobStatus defines the observed state of PatchJob
             properties:

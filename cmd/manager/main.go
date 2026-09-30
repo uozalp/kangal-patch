@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -78,10 +79,17 @@ func main() {
 		operatorNamespace = "default"
 	}
 
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
+		os.Exit(1)
+	}
+
 	if err = (&controllers.PatchPlanReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,
+		Discovery: discoveryClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PatchPlan")
 		os.Exit(1)

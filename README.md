@@ -338,8 +338,30 @@ As of this writing, the supported combinations are:
 | [1.10](https://docs.siderolabs.com/talos/v1.10/getting-started/support-matrix) | 1.33, 1.32, 1.31, 1.30, 1.29, 1.28 |
 
 This table goes stale with every new Talos/Kubernetes release, so always check the link above for
-the current matrix rather than relying on the snapshot here. kangal-patch does **not** currently
-validate `target.kubernetesVersion` against this matrix itself.
+the current matrix rather than relying on the snapshot here. Before scheduling any node, the
+preflight checks (see [Preflight Checks](#preflight-checks)) reject a `target.kubernetesVersion`
+that's outside the range in a built-in copy of this table. Talos versions newer than the built-in
+table are not checked.
+
+### Preflight Checks
+
+Before the first `PatchJob` of a `PatchPlan` is created, the controller runs these checks once
+(phase `Preflighting`) and schedules nothing until all pass:
+
+- the node selection resolves to at least one node
+- no other `InProgress` or `Paused` PatchPlan targets any of the same nodes
+- the Kubernetes API reports ready (`/readyz`)
+- the Talos credentials work against the configured endpoints, and every selected node answers on the Talos API
+- the Talos installer image exists in the registry for nodes that still need the upgrade
+- `target.kubernetesVersion` is supported by the target (or, if unset, the current) Talos version
+
+On failure the plan moves to `Failed`, the `PreflightPassed` condition carries the reason and
+message, and the checks are retried every minute, so fixing the cause (e.g. a Secret) recovers the
+plan without recreating it. Checks are not repeated once `PatchJobs` exist.
+
+```bash
+kubectl get patchplan simple-upgrade -o jsonpath='{.status.conditions}' | jq
+```
 
 ## Configuration Reference
 

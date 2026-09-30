@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -28,6 +29,8 @@ type PatchPlanReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Namespace string
+	// Discovery is used for the Kubernetes API health check during preflight.
+	Discovery discovery.DiscoveryInterface
 }
 
 type JobCounts struct {
@@ -130,6 +133,15 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	if paused {
 		return ctrl.Result{RequeueAfter: requeueWhenPaused}, nil
+	}
+
+	// Validate the plan once before any PatchJob exists; nothing is scheduled until it passes
+	preflightPassed, err := r.ensurePreflight(ctx, &patchPlan, targetNodes, jobsByNode)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !preflightPassed {
+		return ctrl.Result{RequeueAfter: requeueWhenPreflightFailed}, nil
 	}
 
 	// Check if all nodes are processed

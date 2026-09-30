@@ -22,7 +22,7 @@ spec:
   delayBetweenNodes: "5m"
 
   # Conservative failure handling
-  maxFailures: 0        # Stop on first failure
+  maxFailures: 1        # Stop after the first failed node
 
   # Drain settings
   respectPDBs: true

@@ -247,14 +247,13 @@ spec:
             x-kubernetes-validations:
             - message: at least one of target.talosVersion or target.kubernetesVersion
                 must be set
-              rule: size(self.target.talosVersion) > 0 || size(self.target.kubernetesVersion)
-                > 0
+              rule: has(self.target.talosVersion) || has(self.target.kubernetesVersion)
             - message: controlPlaneFirst must be true when target.kubernetesVersion
                 is set
-              rule: size(self.target.kubernetesVersion) == 0 || self.controlPlaneFirst
+              rule: '!has(self.target.kubernetesVersion) || self.controlPlaneFirst'
             - message: patchControlPlane must be true when target.kubernetesVersion
                 is set
-              rule: size(self.target.kubernetesVersion) == 0 || self.patchControlPlane
+              rule: '!has(self.target.kubernetesVersion) || self.patchControlPlane'
           status:
             description: PatchPlanStatus defines the observed state of PatchPlan
             properties:
@@ -350,6 +349,7 @@ spec:
                 description: Phase represents the current phase of the patching operation
                 enum:
                 - Pending
+                - Preflighting
                 - InProgress
                 - Paused
                 - Cancelled

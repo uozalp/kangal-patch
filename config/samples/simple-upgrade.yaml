@@ -28,7 +28,7 @@ spec:
   delayBetweenNodes: "300s"     # Wait 5 minutes between scheduling nodes
 
   # Failure handling
-  maxFailures: 1        # Stop if more than 1 node fails
+  maxFailures: 1        # Stop after the first failed node
 
   # Drain settings
   respectPDBs: true

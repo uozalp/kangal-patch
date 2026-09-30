@@ -71,6 +71,20 @@ func (c *Client) GetVersion(ctx context.Context, nodeName string) (string, error
 	return "", fmt.Errorf("no version response received from node %s", nodeName)
 }
 
+// CheckConnection verifies the configured endpoints are reachable and accept the client
+// credentials, without targeting a specific node.
+func (c *Client) CheckConnection(ctx context.Context) error {
+	if c.client == nil {
+		return fmt.Errorf("client not initialized")
+	}
+
+	if _, err := c.client.Version(ctx); err != nil {
+		return fmt.Errorf("failed to query Talos endpoint: %w", err)
+	}
+
+	return nil
+}
+
 // GetSchematicID returns the factory schematic ID the node is currently running, or an empty
 // string if the node was not installed from a factory image.
 func (c *Client) GetSchematicID(ctx context.Context, nodeName string) (string, error) {
