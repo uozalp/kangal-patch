@@ -61,6 +61,13 @@ spec:
           spec:
             description: PatchPlanSpec defines the desired state of PatchPlan
             properties:
+              cancelled:
+                default: false
+                description: |-
+                  Cancelled permanently stops the patching operation. Unlike Paused, scheduling of new
+                  nodes stops for good and the plan moves to the terminal Cancelled phase. PatchJobs
+                  already in progress are not affected and run to completion.
+                type: boolean
               controlPlaneFirst:
                 default: false
                 description: ControlPlaneFirst indicates whether to patch control
@@ -345,6 +352,7 @@ spec:
                 - Pending
                 - InProgress
                 - Paused
+                - Cancelled
                 - Completed
                 - Failed
                 type: string

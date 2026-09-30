@@ -114,6 +114,15 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
+	// Handle cancellation - takes priority over pause and stops the reconciler for good
+	cancelled, err := r.ensureCancelledState(ctx, &patchPlan)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if cancelled {
+		return ctrl.Result{}, nil
+	}
+
 	// Handle pause/resume state
 	paused, err := r.ensurePauseState(ctx, &patchPlan)
 	if err != nil {
@@ -210,6 +219,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if patchPlan.Status.Phase == patchv1alpha1.PatchPhasePending ||
 		patchPlan.Status.Phase == patchv1alpha1.PatchPhaseFailed ||
 		patchPlan.Status.Phase == patchv1alpha1.PatchPhaseCompleted ||
+		patchPlan.Status.Phase == patchv1alpha1.PatchPhaseCancelled ||
 		patchPlan.Status.Phase == "" {
 		original := patchPlan.DeepCopy()
 		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseInProgress
@@ -429,6 +439,8 @@ func (r *PatchPlanReconciler) createSchedulingLease(ctx context.Context, patchPl
 			Labels: map[string]string{
 				"kangalpatch.ozalp.dk/patchplan": patchPlan.Name,
 				"kangalpatch.ozalp.dk/node":      nodeName,
+				"kangalpatch.ozalp.dk/patchjob":  patchJob.Name,
+				"kangalpatch.ozalp.dk/group":     "xxx", // TODO: hardcoded until group support is added
 			},
 		},
 		Spec: coordinationv1.LeaseSpec{
@@ -506,6 +518,32 @@ func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *pat
 	}
 
 	return nil
+}
+
+// ensureCancelledState checks if the PatchPlan has been cancelled and updates the status
+// accordingly. Returns true if cancelled, in which case Reconcile must stop scheduling new
+// nodes; unlike pause this is a terminal phase and the reconciler does not requeue.
+func (r *PatchPlanReconciler) ensureCancelledState(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan) (bool, error) {
+	if !patchPlan.Spec.Cancelled {
+		return false, nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	if patchPlan.Status.Phase != patchv1alpha1.PatchPhaseCancelled {
+		original := patchPlan.DeepCopy()
+		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseCancelled
+		patchPlan.Status.Message = "Patching cancelled by user"
+		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+
+		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+			logger.Error(err, "unable to update PatchPlan status to cancelled")
+			return true, err
+		}
+	}
+
+	logger.Info("PatchPlan is cancelled")
+	return true, nil
 }
 
 // ensurePauseState checks if the PatchPlan is paused or resuming from pause

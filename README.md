@@ -121,7 +121,7 @@ factory.talos.dev/{installer}-installer[-secureboot]/{schematicID}:{talosVersion
 Field breakdown:
 ```yaml
 target:
-  talosVersion: v1.11.6                # The Talos version tag
+  talosVersion: v1.11.6               # The Talos version tag
   source: factory                     # Use factory.talos.dev (vs ghcr)
   installer: nocloud                  # The installer type (aws, azure, nocloud, etc.)
   schematicID: 95d432d6bb...          # The factory schematic hash
@@ -253,7 +253,19 @@ Resume:
 kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}}'
 ```
 
-### 6. Upgrading Across Multiple Talos Versions
+### 6. Cancel
+
+Unlike pause, cancelling is permanent: the PatchPlan moves to the terminal `Cancelled` phase and
+the controller stops scheduling new nodes. PatchJobs already in progress are not affected and
+run to completion.
+
+```bash
+kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":true}}'
+```
+
+Setting `cancelled` back to `false` resumes scheduling, same as pause/resume.
+
+### 7. Upgrading Across Multiple Talos Versions
 
 Talos doesn't reliably support jumping several minor versions in a single upgrade. A large
 version skip (e.g. `v1.11.x` → `v1.14.x`) can silently fail: the upgrade succeeds and the node
@@ -309,7 +321,7 @@ the node as `Ready` again. Confirm the actual installed version via the node's `
 (`kubectl get nodes -o wide`) or `talosctl -n <node-ip> version`, then retry with an intermediate
 version as shown above.
 
-### 7. Kubernetes Version Compatibility
+### 8. Kubernetes Version Compatibility
 
 Not every Kubernetes version runs on every Talos version. Before setting `target.kubernetesVersion`,
 check the official Talos support matrix for the Talos version your nodes are running:
@@ -327,8 +339,7 @@ As of this writing, the supported combinations are:
 
 This table goes stale with every new Talos/Kubernetes release, so always check the link above for
 the current matrix rather than relying on the snapshot here. kangal-patch does **not** currently
-validate `target.kubernetesVersion` against this matrix itself (see `private/TODO.md`) - requesting
-an unsupported combination will fail at the Talos API level rather than being rejected up front.
+validate `target.kubernetesVersion` against this matrix itself.
 
 ## Configuration Reference
 
@@ -348,6 +359,7 @@ an unsupported combination will fail at the Talos API level rather than being re
 | `patchWorkers` | bool | Patch worker nodes | `true` |
 | `controlPlaneFirst` | bool | Patch control plane first | `false` |
 | `paused` | bool | Pause operation | `false` |
+| `cancelled` | bool | Permanently cancel operation | `false` |
 | `maintenance` | object | Maintenance window configuration | `nil` |
 
 #### Target Spec

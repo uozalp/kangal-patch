@@ -100,6 +100,12 @@ type PatchPlanSpec struct {
 	// +kubebuilder:default=false
 	Paused bool `json:"paused,omitempty"`
 
+	// Cancelled permanently stops the patching operation. Unlike Paused, scheduling of new
+	// nodes stops for good and the plan moves to the terminal Cancelled phase. PatchJobs
+	// already in progress are not affected and run to completion.
+	// +kubebuilder:default=false
+	Cancelled bool `json:"cancelled,omitempty"`
+
 	// TalosConfig contains Talos API connection information
 	// +optional
 	TalosConfig TalosConfig `json:"talosConfig,omitempty"`
@@ -177,7 +183,7 @@ type SecretReference struct {
 // PatchPlanStatus defines the observed state of PatchPlan
 type PatchPlanStatus struct {
 	// Phase represents the current phase of the patching operation
-	// +kubebuilder:validation:Enum=Pending;InProgress;Paused;Completed;Failed
+	// +kubebuilder:validation:Enum=Pending;InProgress;Paused;Cancelled;Completed;Failed
 	Phase PatchPhase `json:"phase,omitempty"`
 
 	// TargetTalosVersion is the display Talos version extracted from spec.target
@@ -234,6 +240,7 @@ const (
 	PatchPhasePending    PatchPhase = "Pending"
 	PatchPhaseInProgress PatchPhase = "InProgress"
 	PatchPhasePaused     PatchPhase = "Paused"
+	PatchPhaseCancelled  PatchPhase = "Cancelled"
 	PatchPhaseCompleted  PatchPhase = "Completed"
 	PatchPhaseFailed     PatchPhase = "Failed"
 )
