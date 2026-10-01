@@ -1,15 +1,8 @@
 package v1alpha1
 
 import (
-	"time"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-)
-
-const (
-	// PatchJobTTL is the time to keep completed/failed PatchJobs before cleanup (7 days)
-	PatchJobTTL = 7 * 24 * time.Hour
 )
 
 // PatchJobSpec defines the desired state of PatchJob
@@ -26,6 +19,11 @@ type PatchJobSpec struct {
 	// PatchPlanRef references the parent PatchPlan
 	// +optional
 	PatchPlanRef string `json:"patchPlanRef,omitempty"`
+
+	// Group is the PatchPlan group that scheduled the node; its Lease counts against that group's
+	// concurrency.
+	// +optional
+	Group string `json:"group,omitempty"`
 }
 
 // PatchJobStatus defines the observed state of PatchJob
@@ -86,17 +84,6 @@ func (p PatchJobPhase) IsTerminal() bool {
 	return p == PatchJobPhaseCompleted || p == PatchJobPhaseFailed
 }
 
-// ShouldCleanup returns true if the PatchJob has been completed/failed for longer than PatchJobTTL
-func (pj *PatchJob) ShouldCleanup() bool {
-	if !pj.Status.Phase.IsTerminal() {
-		return false
-	}
-	if pj.Status.CompletionTime == nil {
-		return false
-	}
-	return time.Since(pj.Status.CompletionTime.Time) > PatchJobTTL
-}
-
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
@@ -110,8 +97,8 @@ func (pj *PatchJob) ShouldCleanup() bool {
 
 // PatchJob is the Schema for the patchjobs API
 // PatchJobs are owned by their parent PatchPlan and will be automatically deleted
-// when the PatchPlan is deleted. Completed/failed PatchJobs are automatically
-// cleaned up after PatchJobTTL (7 days).
+// when the PatchPlan is deleted. Finished PatchJobs are removed once the PatchPlan's
+// spec.retention.history has passed.
 type PatchJob struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

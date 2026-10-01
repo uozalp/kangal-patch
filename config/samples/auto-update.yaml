@@ -18,13 +18,17 @@ spec:
 
   # Everything below is copied to the child plans
   nodeSelector:
-    kubernetes.io/os: linux
+    matchLabels:
+      kubernetes.io/os: linux
 
-  patchControlPlane: true
-  patchWorkers: true
-  controlPlaneFirst: true
-  maxConcurrency: 1
-  maxFailures: 1
+  strategy:
+    order: [controlPlane, workers]
+  groups:
+    controlPlane: {concurrency: 1}
+    workers: {concurrency: 1}
+  failurePolicy:
+    type: Halt
+    maxFailures: 1
   delayBetweenNodes: "5m"
   respectPDBs: true
   drainTimeout: "5m"

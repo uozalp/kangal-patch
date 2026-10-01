@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -73,8 +75,8 @@ type TargetSpec struct {
 
 	// KubernetesVersion is the desired Kubernetes version (e.g., v1.32.4). Omit to leave the
 	// Kubernetes version untouched and only upgrade TalosVersion.
-	// Requires ControlPlaneFirst and PatchControlPlane to be true, since kubelets must never run
-	// newer than the control plane they connect to.
+	// Preflight requires strategy.order to schedule every control plane node before any worker
+	// node, since kubelets must never run newer than the control plane they connect to.
 	// +optional
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 
@@ -103,27 +105,35 @@ type TargetSpec struct {
 // PatchPlanSpec defines the desired state of PatchPlan
 // +kubebuilder:validation:XValidation:rule="has(self.target.talosVersion) || has(self.target.kubernetesVersion) || (has(self.target.autoUpdate) && self.target.autoUpdate.enabled)",message="at least one of target.talosVersion, target.kubernetesVersion or an enabled target.autoUpdate must be set"
 // +kubebuilder:validation:XValidation:rule="!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled) || (!has(self.target.talosVersion) && !has(self.target.kubernetesVersion))",message="target.talosVersion and target.kubernetesVersion must be omitted when target.autoUpdate is enabled"
-// +kubebuilder:validation:XValidation:rule="!has(self.target.kubernetesVersion) || self.controlPlaneFirst",message="controlPlaneFirst must be true when target.kubernetesVersion is set"
-// +kubebuilder:validation:XValidation:rule="!has(self.target.kubernetesVersion) || self.patchControlPlane",message="patchControlPlane must be true when target.kubernetesVersion is set"
 type PatchPlanSpec struct {
 	// Target defines the target Talos and/or Kubernetes version specification
 	// +kubebuilder:validation:Required
 	Target TargetSpec `json:"target"`
 
-	// NodeSelector selects which nodes to patch (label selector)
+	// NodeSelector selects the complete population of nodes this plan may patch. Groups only
+	// filter this population and never add nodes. An empty selector selects every node.
 	// +optional
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	NodeSelector *metav1.LabelSelector `json:"nodeSelector,omitempty"`
 
-	// MaxConcurrency is the maximum number of nodes to patch concurrently
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=1
-	MaxConcurrency int `json:"maxConcurrency,omitempty"`
+	// Groups defines custom node groups by name. A group is a label filter over the nodes picked by
+	// nodeSelector and may overlap with other groups; strategy.order decides which group schedules
+	// a node matching several. The built-in groups "workers" and "controlPlane" need not be
+	// declared; declaring them only sets their concurrency.
+	// +kubebuilder:validation:MaxProperties=32
+	// +optional
+	Groups map[string]GroupSpec `json:"groups,omitempty"`
 
-	// MaxFailures is the maximum number of failed nodes before the plan stops.
-	// Default is 0 (fail on first failure).
-	// +kubebuilder:default=0
-	// +kubebuilder:validation:Minimum=0
-	MaxFailures int `json:"maxFailures,omitempty"`
+	// Strategy defines the order in which groups are rolled out.
+	// +kubebuilder:default={}
+	Strategy StrategySpec `json:"strategy,omitempty"`
+
+	// FailurePolicy defines what happens when a node fails to patch.
+	// +kubebuilder:default={}
+	FailurePolicy FailurePolicySpec `json:"failurePolicy,omitempty"`
+
+	// Retention defines how long finished rollout history is kept.
+	// +kubebuilder:default={}
+	Retention RetentionSpec `json:"retention,omitempty"`
 
 	// DelayBetweenNodes is the delay between patching individual nodes (e.g., "30s", "2m")
 	// +kubebuilder:default="5m"
@@ -143,18 +153,6 @@ type PatchPlanSpec struct {
 	// +kubebuilder:default="10m"
 	RebootTimeout metav1.Duration `json:"rebootTimeout,omitempty"`
 
-	// PatchControlPlane indicates whether to patch control plane nodes
-	// +kubebuilder:default=true
-	PatchControlPlane bool `json:"patchControlPlane,omitempty"`
-
-	// PatchWorkers indicates whether to patch worker nodes
-	// +kubebuilder:default=true
-	PatchWorkers bool `json:"patchWorkers,omitempty"`
-
-	// ControlPlaneFirst indicates whether to patch control plane before workers
-	// +kubebuilder:default=false
-	ControlPlaneFirst bool `json:"controlPlaneFirst,omitempty"`
-
 	// Paused pauses the patching operation
 	// +kubebuilder:default=false
 	Paused bool `json:"paused,omitempty"`
@@ -172,6 +170,89 @@ type PatchPlanSpec struct {
 	// Maintenance defines maintenance windows for patching operations
 	// +optional
 	Maintenance *MaintenanceSpec `json:"maintenance,omitempty"`
+}
+
+// Built-in group names that are always available without being declared under spec.groups.
+const (
+	GroupWorkers      = "workers"
+	GroupControlPlane = "controlPlane"
+)
+
+// GroupSpec configures a node group.
+type GroupSpec struct {
+	// Selector filters the nodes picked by spec.nodeSelector. Required for custom groups and
+	// not allowed for the built-in "workers" and "controlPlane" groups.
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
+	// Concurrency is the maximum number of nodes of this group patched at the same time.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=1
+	Concurrency int `json:"concurrency,omitempty"`
+}
+
+// StrategySpec defines how groups are rolled out.
+type StrategySpec struct {
+	// Order lists the groups from first to last. Every group completes before the next one starts,
+	// and a node matching several groups is patched by the first one listed. Nodes matching no
+	// listed group are not patched. The order is used exactly as written.
+	// +kubebuilder:default={controlPlane,workers}
+	// +kubebuilder:validation:MaxItems=34
+	// +listType=set
+	Order []string `json:"order,omitempty"`
+}
+
+// FailurePolicyType selects how node failures affect the rollout.
+// +kubebuilder:validation:Enum=Halt;Pause
+type FailurePolicyType string
+
+const (
+	// FailurePolicyHalt marks the plan Failed once maxFailures nodes have failed.
+	FailurePolicyHalt FailurePolicyType = "Halt"
+	// FailurePolicyPause pauses the plan once maxFailures nodes have failed so a user can inspect,
+	// retry nodes and resume.
+	FailurePolicyPause FailurePolicyType = "Pause"
+)
+
+// FailurePolicySpec defines what happens when nodes fail. It never affects concurrency.
+type FailurePolicySpec struct {
+	// Type is Halt (mark the plan Failed) or Pause (set spec.paused so the failure can be inspected;
+	// setting paused back to false resumes and accepts the failures seen so far). Already running
+	// nodes are never interrupted.
+	// +kubebuilder:default=Halt
+	Type FailurePolicyType `json:"type,omitempty"`
+
+	// MaxFailures is the number of failed nodes that triggers the policy. 0 is treated as 1.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	MaxFailures int `json:"maxFailures,omitempty"`
+}
+
+// Exceeded reports whether the number of new failed nodes has reached the policy threshold.
+func (f FailurePolicySpec) Exceeded(newFailures int) bool {
+	return newFailures >= max(f.MaxFailures, 1)
+}
+
+// DefaultHistoryRetention is how long finished rollout history is kept when unset.
+const DefaultHistoryRetention = 7 * 24 * time.Hour
+
+// RetentionSpec defines how long finished rollout history is kept.
+type RetentionSpec struct {
+	// History is how long the PatchJobs of a finished PatchPlan are kept after the plan completed,
+	// failed or was cancelled. Only terminal PatchJobs are ever removed. Once removed the plan is
+	// frozen; create a new PatchPlan to roll out again.
+	// +kubebuilder:default="168h"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
+	History metav1.Duration `json:"history,omitempty"`
+}
+
+// HistoryRetention returns how long finished PatchJobs are kept.
+func (p *PatchPlan) HistoryRetention() time.Duration {
+	if p.Spec.Retention.History.Duration <= 0 {
+		return DefaultHistoryRetention
+	}
+	return p.Spec.Retention.History.Duration
 }
 
 // MaintenanceSpec defines maintenance windows for patching operations
@@ -263,8 +344,17 @@ type PatchPlanStatus struct {
 	// +optional
 	KubeProxyUpgraded bool `json:"kubeProxyUpgraded,omitempty"`
 
-	// TotalNodes is the total number of nodes selected for patching
+	// TotalNodes is the number of unique nodes the rollout covers: selected by nodeSelector and
+	// claimed by a group in strategy.order.
 	TotalNodes int `json:"totalNodes,omitempty"`
+
+	// PendingNodes is the number of nodes that have no PatchJob yet (derived from PatchJobs)
+	// +kubebuilder:default=0
+	PendingNodes int `json:"pendingNodes"`
+
+	// RunningNodes is the number of nodes with a PatchJob that has not finished (derived from PatchJobs)
+	// +kubebuilder:default=0
+	RunningNodes int `json:"runningNodes"`
 
 	// CompletedNodes is the number of nodes successfully patched (derived from PatchJobs)
 	// +kubebuilder:default=0
@@ -273,6 +363,22 @@ type PatchPlanStatus struct {
 	// FailedNodes is the number of nodes that failed to patch (derived from PatchJobs)
 	// +kubebuilder:default=0
 	FailedNodes int `json:"failedNodes"`
+
+	// Groups reports the rollout progress per group, in strategy.order.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Groups []GroupStatus `json:"groups,omitempty"`
+
+	// FailuresAcknowledged is the number of failed nodes a user accepted by resuming a plan that
+	// the Pause failure policy paused. Only failures beyond it count towards the policy.
+	// +optional
+	FailuresAcknowledged int `json:"failuresAcknowledged,omitempty"`
+
+	// HistoryPurged is set once the finished PatchJobs were removed after spec.retention.history.
+	// The plan is frozen from then on.
+	// +optional
+	HistoryPurged bool `json:"historyPurged,omitempty"`
 
 	// LastNodeScheduledAt is when the last PatchJob was created
 	// Used to enforce DelayBetweenNodes
@@ -296,6 +402,33 @@ type PatchPlanStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// GroupStatus is the rollout progress of one group.
+type GroupStatus struct {
+	// Name is the group name.
+	Name string `json:"name"`
+
+	// Concurrency is the configured maximum of simultaneously active PatchJobs.
+	Concurrency int `json:"concurrency"`
+
+	// Active is the number of Leases currently held by the group.
+	Active int `json:"active"`
+
+	// Total is the number of unique nodes this group schedules.
+	Total int `json:"total"`
+
+	// Pending is the number of nodes without a PatchJob yet.
+	Pending int `json:"pending"`
+
+	// Running is the number of nodes whose PatchJob has not finished.
+	Running int `json:"running"`
+
+	// Completed is the number of nodes patched successfully.
+	Completed int `json:"completed"`
+
+	// Failed is the number of nodes whose PatchJob failed.
+	Failed int `json:"failed"`
+}
+
 // PatchPhase represents the phase of patching operation
 type PatchPhase string
 
@@ -315,6 +448,15 @@ const (
 // template's name.
 const LabelParentPlan = "kangalpatch.ozalp.dk/parent"
 
+// Labels set on the PatchJobs and Leases a PatchPlan creates. A Lease is the concurrency slot of
+// one active PatchJob, so counting Leases by plan and group gives the live concurrency.
+const (
+	LabelPatchPlan = "kangalpatch.ozalp.dk/patchplan"
+	LabelGroup     = "kangalpatch.ozalp.dk/group"
+	LabelNode      = "kangalpatch.ozalp.dk/node"
+	LabelPatchJob  = "kangalpatch.ozalp.dk/patchjob"
+)
+
 // IsAutoUpdateTemplate reports whether the plan only watches for releases and creates child plans.
 func (p *PatchPlan) IsAutoUpdateTemplate() bool {
 	return p.Spec.Target.AutoUpdate != nil && p.Spec.Target.AutoUpdate.Enabled
@@ -333,6 +475,7 @@ const ConditionPreflightPassed = "PreflightPassed"
 // +kubebuilder:printcolumn:name="TalosTarget",type=string,JSONPath=`.status.targetTalosVersion`
 // +kubebuilder:printcolumn:name="K8sTarget",type=string,JSONPath=`.status.targetKubernetesVersion`
 // +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.totalNodes`
+// +kubebuilder:printcolumn:name="Running",type=integer,JSONPath=`.status.runningNodes`
 // +kubebuilder:printcolumn:name="Completed",type=integer,JSONPath=`.status.completedNodes`
 // +kubebuilder:printcolumn:name="Failed",type=integer,JSONPath=`.status.failedNodes`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

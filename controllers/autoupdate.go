@@ -17,6 +17,7 @@ import (
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/release"
+	"github.com/uozalp/kangal-patch/internal/scheduling"
 	"github.com/uozalp/kangal-patch/internal/talos"
 )
 
@@ -131,10 +132,13 @@ func (r *PatchPlanReconciler) checkForRelease(ctx context.Context, patchPlan *pa
 	if err != nil {
 		return release.Version{}, release.Result{}, err
 	}
-	controlPlane, workers := nodeutil.SplitByRole(nodes)
-	targetNodes := nodeutil.OrderTargetNodes(controlPlane, workers, patchPlan.Spec)
+	rollout, err := scheduling.Resolve(nodes, patchPlan.Spec)
+	if err != nil {
+		return release.Version{}, release.Result{}, err
+	}
+	targetNodes := rollout.Nodes()
 	if len(targetNodes) == 0 {
-		return release.Version{}, release.Result{}, fmt.Errorf("nodeSelector matched no nodes")
+		return release.Version{}, release.Result{}, fmt.Errorf("nodeSelector and strategy.order matched no nodes")
 	}
 
 	current, err := r.lowestTalosVersion(ctx, patchPlan, targetNodes)

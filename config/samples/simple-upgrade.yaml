@@ -11,24 +11,25 @@ spec:
     schematicID: 95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7
     secureBoot: true
 
-  # Node selection
+  # Node selection: the complete population of the plan
   nodeSelector:
-    kubernetes.io/os: linux
+    matchLabels:
+      kubernetes.io/os: linux
 
-  # Patch both control plane and workers
-  patchControlPlane: false
-  patchWorkers: true
-  
-  maxConcurrency: 1
-
-  # Upgrade control plane first, then workers
-  controlPlaneFirst: false
+  # Only worker nodes are patched; controlPlane is not listed
+  strategy:
+    order: [workers]
+  groups:
+    workers:
+      concurrency: 1
 
   # Delay between scheduling nodes
   delayBetweenNodes: "300s"     # Wait 5 minutes between scheduling nodes
 
   # Failure handling
-  maxFailures: 1        # Stop after the first failed node
+  failurePolicy:
+    type: Halt
+    maxFailures: 1      # Halt after the first failed node
 
   # Drain settings
   respectPDBs: true

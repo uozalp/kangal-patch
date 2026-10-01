@@ -42,8 +42,8 @@ spec:
         description: |-
           PatchJob is the Schema for the patchjobs API
           PatchJobs are owned by their parent PatchPlan and will be automatically deleted
-          when the PatchPlan is deleted. Completed/failed PatchJobs are automatically
-          cleaned up after PatchJobTTL (7 days).
+          when the PatchPlan is deleted. Finished PatchJobs are removed once the PatchPlan's
+          spec.retention.history has passed.
         properties:
           apiVersion:
             description: |-
@@ -65,6 +65,11 @@ spec:
           spec:
             description: PatchJobSpec defines the desired state of PatchJob
             properties:
+              group:
+                description: |-
+                  Group is the PatchPlan group that scheduled the node; its Lease counts against that group's
+                  concurrency.
+                type: string
               nodeName:
                 description: NodeName is the name of the node to patch
                 type: string
@@ -119,8 +124,8 @@ spec:
                     description: |-
                       KubernetesVersion is the desired Kubernetes version (e.g., v1.32.4). Omit to leave the
                       Kubernetes version untouched and only upgrade TalosVersion.
-                      Requires ControlPlaneFirst and PatchControlPlane to be true, since kubelets must never run
-                      newer than the control plane they connect to.
+                      Preflight requires strategy.order to schedule every control plane node before any worker
+                      node, since kubelets must never run newer than the control plane they connect to.
                     type: string
                   schematicID:
                     description: |-

@@ -11,18 +11,22 @@ spec:
     schematicID: 95d432d6bb450a67e801a6ae77c96a67e38820b62ba4159ae7e997e1695207f7
     secureBoot: true
 
-  # Only patch control plane nodes
-  patchControlPlane: true
-  patchWorkers: false
+  # Only patch control plane nodes: workers is not listed, so worker nodes are left untouched
+  strategy:
+    order: [controlPlane]
 
   # Conservative settings for control plane
-  maxConcurrency: 1     # One at a time for safety
+  groups:
+    controlPlane:
+      concurrency: 1     # One at a time for safety
 
   # Longer delays for control plane stability
   delayBetweenNodes: "5m"
 
   # Conservative failure handling
-  maxFailures: 1        # Stop after the first failed node
+  failurePolicy:
+    type: Halt
+    maxFailures: 1       # Halt after the first failed node
 
   # Drain settings
   respectPDBs: true

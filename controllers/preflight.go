@@ -19,6 +19,7 @@ import (
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/registry"
+	"github.com/uozalp/kangal-patch/internal/scheduling"
 	"github.com/uozalp/kangal-patch/internal/supportmatrix"
 	"github.com/uozalp/kangal-patch/internal/talos"
 )
@@ -34,6 +35,7 @@ const (
 	reasonInvalidTarget           = "InvalidTarget"
 	reasonTalosImageUnavailable   = "TalosImageUnavailable"
 	reasonUnsupportedVersionCombo = "UnsupportedVersionCombination"
+	reasonControlPlaneOrder       = "ControlPlaneOrderRequired"
 )
 
 const (
@@ -62,17 +64,18 @@ func (p *preflightResult) pass(format string, args ...any) {
 	p.passed = append(p.passed, fmt.Sprintf(format, args...))
 }
 
-// nodeProbe is what the Talos API reported for a single node.
+// nodeProbe is what the Talos API and the Kubernetes Node reported for a single node.
 type nodeProbe struct {
-	node        string
-	version     string
-	schematicID string
+	node              string
+	version           string
+	kubernetesVersion string
+	schematicID       string
 }
 
 // ensurePreflight runs the pre-flight checks once, before the first PatchJob of the plan is created,
 // and reports whether scheduling may proceed. The result is recorded in the PreflightPassed condition;
 // a failed run sets the plan to Failed and the caller retries until it passes.
-func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, targetNodes []corev1.Node, jobsByNode map[string]*patchv1alpha1.PatchJob) (bool, error) {
+func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, rollout *scheduling.Rollout, jobsByNode map[string]*patchv1alpha1.PatchJob) (bool, error) {
 	// Once rollout has started nodes are expected to be cordoned/rebooting, so re-checking would be misleading.
 	if len(jobsByNode) > 0 {
 		return true, nil
@@ -94,7 +97,7 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 		}
 	}
 
-	res, err := r.runPreflight(ctx, patchPlan, targetNodes)
+	res, err := r.runPreflight(ctx, patchPlan, rollout)
 	if err != nil {
 		return false, err
 	}
@@ -141,12 +144,17 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 
 // runPreflight executes every check and returns the passed and failed results. A non-nil error means
 // a check couldn't be evaluated for a transient reason and should be retried rather than reported as a plan failure.
-func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, targetNodes []corev1.Node) (*preflightResult, error) {
+func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, rollout *scheduling.Rollout) (*preflightResult, error) {
 	res := &preflightResult{}
 
+	targetNodes := rollout.Nodes()
 	if len(targetNodes) == 0 {
-		res.fail(reasonNoNodesSelected, "nodeSelector %v with patchControlPlane=%t patchWorkers=%t matched no nodes",
-			patchPlan.Spec.NodeSelector, patchPlan.Spec.PatchControlPlane, patchPlan.Spec.PatchWorkers)
+		if rollout.Selected == 0 {
+			res.fail(reasonNoNodesSelected, "nodeSelector %s matched no nodes", metav1.FormatLabelSelector(patchPlan.Spec.NodeSelector))
+		} else {
+			res.fail(reasonNoNodesSelected, "none of the %d selected node(s) matches a group in strategy.order [%s]",
+				rollout.Selected, strings.Join(scheduling.Order(patchPlan.Spec), ", "))
+		}
 		return res, nil
 	}
 
@@ -155,6 +163,13 @@ func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patch
 		names[i] = targetNodes[i].Name
 	}
 	res.pass("%d node(s) selected: %s", len(names), truncatedList(names, preflightMaxNamesInMessages))
+	res.pass("rollout plan: %s", describeRollout(rollout))
+	if len(rollout.Unassigned) > 0 {
+		res.pass("%d selected node(s) match no group in strategy.order and are left untouched: %s",
+			len(rollout.Unassigned), truncatedList(rollout.Unassigned, preflightMaxNamesInMessages))
+	}
+
+	checkUpgradeOrder(patchPlan.Spec.Target, rollout, res)
 
 	if err := r.checkConflictingPlans(ctx, patchPlan, targetNodes, res); err != nil {
 		return nil, err
@@ -168,6 +183,30 @@ func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patch
 	checkVersionCompatibility(ctx, patchPlan.Spec.Target, probes, res)
 
 	return res, nil
+}
+
+// describeRollout summarizes the node count and concurrency of every group in schedule order.
+func describeRollout(rollout *scheduling.Rollout) string {
+	parts := make([]string, len(rollout.Groups))
+	for i, g := range rollout.Groups {
+		parts[i] = fmt.Sprintf("%s: %d node(s), concurrency %d", g.Name, len(g.Nodes), g.Concurrency)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// checkUpgradeOrder rejects a strategy.order that can't carry the requested upgrade. A Kubernetes
+// upgrade needs every control plane node upgraded before any worker; the configured order is never
+// silently changed.
+func checkUpgradeOrder(target patchv1alpha1.TargetSpec, rollout *scheduling.Rollout, res *preflightResult) {
+	if target.KubernetesVersion == "" {
+		return
+	}
+	if err := rollout.CheckControlPlaneFirst(); err != nil {
+		res.fail(reasonControlPlaneOrder,
+			"the requested Kubernetes upgrade requires control plane nodes to be upgraded before worker nodes, but %v; no PatchJobs have been created", err)
+		return
+	}
+	res.pass("strategy.order upgrades control plane nodes before worker nodes")
 }
 
 // checkConflictingPlans fails if another active PatchPlan targets any of the same nodes.
@@ -196,10 +235,14 @@ func (r *PatchPlanReconciler) checkConflictingPlans(ctx context.Context, patchPl
 		if err != nil {
 			return err
 		}
-		controlPlane, workers := nodeutil.SplitByRole(nodes)
+		otherRollout, err := scheduling.Resolve(nodes, other.Spec)
+		if err != nil {
+			// An invalid plan fails its own preflight and schedules nothing
+			continue
+		}
 
 		var overlap []string
-		for _, n := range nodeutil.OrderTargetNodes(controlPlane, workers, other.Spec) {
+		for _, n := range otherRollout.Nodes() {
 			if _, ok := mine[n.Name]; ok {
 				overlap = append(overlap, n.Name)
 			}
@@ -309,7 +352,7 @@ func probeNode(ctx context.Context, talosClient *talos.Client, node *corev1.Node
 	ctx, cancel := context.WithTimeout(ctx, preflightCallTimeout)
 	defer cancel()
 
-	probe := nodeProbe{node: node.Name}
+	probe := nodeProbe{node: node.Name, kubernetesVersion: node.Status.NodeInfo.KubeletVersion}
 	if probe.version, err = talosClient.GetVersion(ctx, addr); err != nil {
 		return nodeProbe{}, err
 	}
@@ -370,39 +413,59 @@ func checkTalosImages(ctx context.Context, target patchv1alpha1.TargetSpec, prob
 	}
 }
 
-// checkVersionCompatibility validates target.kubernetesVersion against the Talos version each node
-// will run once the plan is done: the target Talos version if set, otherwise its current one.
+// versionPair is a Talos and Kubernetes version running together on a node.
+type versionPair struct{ talos, kubernetes string }
+
+func (v versionPair) String() string {
+	return fmt.Sprintf("Talos %s + Kubernetes %s", v.talos, v.kubernetes)
+}
+
+// checkVersionCompatibility treats the support matrix as a matrix, per distinct combination of
+// versions found on the nodes: the current combination is reported, and the combination each node
+// ends up with once the plan is done must be supported. A Talos-only upgrade is therefore also
+// checked against the kubelet version the node keeps running.
 func checkVersionCompatibility(ctx context.Context, target patchv1alpha1.TargetSpec, probes []nodeProbe, res *preflightResult) {
-	if target.KubernetesVersion == "" {
-		return
-	}
+	type transition struct{ current, desired versionPair }
 
-	talosVersions := map[string]struct{}{}
-	if target.TalosVersion != "" {
-		talosVersions[target.TalosVersion] = struct{}{}
-	} else {
-		for _, p := range probes {
-			talosVersions[p.version] = struct{}{}
+	seen := map[transition]struct{}{}
+	var transitions []transition
+	for _, p := range probes {
+		current := versionPair{talos: p.version, kubernetes: p.kubernetesVersion}
+		desired := versionPair{
+			talos:      firstNonEmpty(target.TalosVersion, p.version),
+			kubernetes: firstNonEmpty(target.KubernetesVersion, p.kubernetesVersion),
 		}
+		t := transition{current, desired}
+		if _, ok := seen[t]; ok || desired.kubernetes == "" || desired.talos == "" {
+			continue
+		}
+		seen[t] = struct{}{}
+		transitions = append(transitions, t)
 	}
-
-	sorted := make([]string, 0, len(talosVersions))
-	for v := range talosVersions {
-		sorted = append(sorted, v)
-	}
-	slices.Sort(sorted)
+	slices.SortFunc(transitions, func(a, b transition) int {
+		return strings.Compare(a.current.String()+a.desired.String(), b.current.String()+b.desired.String())
+	})
 
 	logger := log.FromContext(ctx)
-	for _, talosVersion := range sorted {
-		err := supportmatrix.ValidateKubernetesVersion(talosVersion, target.KubernetesVersion)
+	for _, t := range transitions {
+		if t.current.kubernetes != "" {
+			if err := supportmatrix.ValidateKubernetesVersion(t.current.talos, t.current.kubernetes); err != nil && !errors.Is(err, supportmatrix.ErrUnknownTalosVersion) {
+				res.pass("current combination %s is outside the support matrix (%v)", t.current, err)
+			}
+		}
+		if t.current == t.desired {
+			continue
+		}
+
+		err := supportmatrix.ValidateKubernetesVersion(t.desired.talos, t.desired.kubernetes)
 		switch {
 		case err == nil:
-			res.pass("Kubernetes %s is supported by Talos %s", target.KubernetesVersion, talosVersion)
+			res.pass("target combination %s is supported (from %s)", t.desired, t.current)
 		case errors.Is(err, supportmatrix.ErrUnknownTalosVersion):
-			res.pass("Kubernetes compatibility with Talos %s not verified (version missing from the matrix)", talosVersion)
-			logger.Info("skipping Kubernetes compatibility check, Talos version missing from the matrix", "talosVersion", talosVersion)
+			res.pass("target combination %s not verified (Talos version missing from the matrix)", t.desired)
+			logger.Info("skipping version compatibility check, Talos version missing from the matrix", "talosVersion", t.desired.talos)
 		default:
-			res.fail(reasonUnsupportedVersionCombo, "%v", err)
+			res.fail(reasonUnsupportedVersionCombo, "target combination %s is invalid (from %s): %v", t.desired, t.current, err)
 		}
 	}
 }

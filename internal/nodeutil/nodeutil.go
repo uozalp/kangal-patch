@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -19,19 +19,6 @@ func GetNodeInternalIP(node *corev1.Node) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no InternalIP address found for node %s", node.Name)
-}
-
-// SplitByRole splits nodes into control plane and worker nodes
-func SplitByRole(nodes []corev1.Node) (controlPlane, workers []corev1.Node) {
-	for i := range nodes {
-		node := &nodes[i]
-		if IsControlPlane(node) {
-			controlPlane = append(controlPlane, *node)
-		} else {
-			workers = append(workers, *node)
-		}
-	}
-	return controlPlane, workers
 }
 
 // IsControlPlane checks if a node is a control plane node
@@ -48,58 +35,24 @@ func IsControlPlane(node *corev1.Node) bool {
 	return false
 }
 
-// listMatchingNodes retrieves all nodes matching the specified label selector.
-// If nodeSelector is empty, all nodes are returned.
-func ListMatchingNodes(ctx context.Context, c client.Client, nodeSelector map[string]string) ([]corev1.Node, error) {
+// ListMatchingNodes retrieves all nodes matching the specified label selector.
+// If nodeSelector is nil or empty, all nodes are returned.
+func ListMatchingNodes(ctx context.Context, c client.Client, nodeSelector *metav1.LabelSelector) ([]corev1.Node, error) {
 	logger := log.FromContext(ctx)
 
-	nodeList := &corev1.NodeList{}
-	listOpts := []client.ListOption{}
-	if len(nodeSelector) > 0 {
-		listOpts = append(listOpts, client.MatchingLabels(nodeSelector))
+	if nodeSelector == nil {
+		nodeSelector = &metav1.LabelSelector{} // a nil selector would match nothing
+	}
+	selector, err := metav1.LabelSelectorAsSelector(nodeSelector)
+	if err != nil {
+		return nil, fmt.Errorf("invalid nodeSelector: %w", err)
 	}
 
-	if err := c.List(ctx, nodeList, listOpts...); err != nil {
+	nodeList := &corev1.NodeList{}
+	if err := c.List(ctx, nodeList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		logger.Error(err, "unable to list nodes")
 		return nil, err
 	}
 
 	return nodeList.Items, nil
-}
-
-// FindNextUnpatchedNode returns the first node from targetNodes that doesn't have a PatchJob yet.
-// Returns nil if all nodes already have jobs.
-func FindNextUnpatchedNode(targetNodes []corev1.Node, jobsByNode map[string]*patchv1alpha1.PatchJob) *corev1.Node {
-	for i := range targetNodes {
-		node := &targetNodes[i]
-		if _, exists := jobsByNode[node.Name]; !exists {
-			return node
-		}
-	}
-	return nil
-}
-
-// OrderTargetNodes returns nodes in the order they should be patched based on the PatchPlan spec.
-// It respects the ControlPlaneFirst flag and the PatchControlPlane/PatchWorkers settings.
-func OrderTargetNodes(controlPlane, workers []corev1.Node, spec patchv1alpha1.PatchPlanSpec) []corev1.Node {
-	var targetNodes []corev1.Node
-
-	if spec.ControlPlaneFirst {
-		if spec.PatchControlPlane {
-			targetNodes = append(targetNodes, controlPlane...)
-		}
-		if spec.PatchWorkers {
-			targetNodes = append(targetNodes, workers...)
-		}
-		return targetNodes
-	}
-
-	// Workers first
-	if spec.PatchWorkers {
-		targetNodes = append(targetNodes, workers...)
-	}
-	if spec.PatchControlPlane {
-		targetNodes = append(targetNodes, controlPlane...)
-	}
-	return targetNodes
 }

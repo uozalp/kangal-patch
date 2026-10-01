@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.totalNodes
       name: Total
       type: integer
+    - jsonPath: .status.runningNodes
+      name: Running
+      type: integer
     - jsonPath: .status.completedNodes
       name: Completed
       type: integer
@@ -68,11 +71,6 @@ spec:
                   nodes stops for good and the plan moves to the terminal Cancelled phase. PatchJobs
                   already in progress are not affected and run to completion.
                 type: boolean
-              controlPlaneFirst:
-                default: false
-                description: ControlPlaneFirst indicates whether to patch control
-                  plane before workers
-                type: boolean
               delayBetweenNodes:
                 default: 5m
                 description: DelayBetweenNodes is the delay between patching individual
@@ -83,6 +81,94 @@ spec:
                 default: 5m
                 description: DrainTimeout is the maximum time to wait for node drain
                 type: string
+              failurePolicy:
+                default: {}
+                description: FailurePolicy defines what happens when a node fails
+                  to patch.
+                properties:
+                  maxFailures:
+                    default: 1
+                    description: MaxFailures is the number of failed nodes that triggers
+                      the policy. 0 is treated as 1.
+                    minimum: 0
+                    type: integer
+                  type:
+                    default: Halt
+                    description: |-
+                      Type is Halt (mark the plan Failed) or Pause (set spec.paused so the failure can be inspected;
+                      setting paused back to false resumes and accepts the failures seen so far). Already running
+                      nodes are never interrupted.
+                    enum:
+                    - Halt
+                    - Pause
+                    type: string
+                type: object
+              groups:
+                additionalProperties:
+                  description: GroupSpec configures a node group.
+                  properties:
+                    concurrency:
+                      default: 1
+                      description: Concurrency is the maximum number of nodes of this
+                        group patched at the same time.
+                      minimum: 1
+                      type: integer
+                    selector:
+                      description: |-
+                        Selector filters the nodes picked by spec.nodeSelector. Required for custom groups and
+                        not allowed for the built-in "workers" and "controlPlane" groups.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                  type: object
+                description: |-
+                  Groups defines custom node groups by name. A group is a label filter over the nodes picked by
+                  nodeSelector and may overlap with other groups; strategy.order decides which group schedules
+                  a node matching several. The built-in groups "workers" and "controlPlane" need not be
+                  declared; declaring them only sets their concurrency.
+                maxProperties: 32
+                type: object
               maintenance:
                 description: Maintenance defines maintenance windows for patching
                   operations
@@ -126,33 +212,54 @@ spec:
                       type: object
                     type: array
                 type: object
-              maxConcurrency:
-                default: 1
-                description: MaxConcurrency is the maximum number of nodes to patch
-                  concurrently
-                minimum: 1
-                type: integer
-              maxFailures:
-                default: 0
-                description: |-
-                  MaxFailures is the maximum number of failed nodes before the plan stops.
-                  Default is 0 (fail on first failure).
-                minimum: 0
-                type: integer
               nodeSelector:
-                additionalProperties:
-                  type: string
-                description: NodeSelector selects which nodes to patch (label selector)
+                description: |-
+                  NodeSelector selects the complete population of nodes this plan may patch. Groups only
+                  filter this population and never add nodes. An empty selector selects every node.
+                properties:
+                  matchExpressions:
+                    description: matchExpressions is a list of label selector requirements.
+                      The requirements are ANDed.
+                    items:
+                      description: |-
+                        A label selector requirement is a selector that contains values, a key, and an operator that
+                        relates the key and values.
+                      properties:
+                        key:
+                          description: key is the label key that the selector applies
+                            to.
+                          type: string
+                        operator:
+                          description: |-
+                            operator represents a key's relationship to a set of values.
+                            Valid operators are In, NotIn, Exists and DoesNotExist.
+                          type: string
+                        values:
+                          description: |-
+                            values is an array of string values. If the operator is In or NotIn,
+                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                            the values array must be empty. This array is replaced during a strategic
+                            merge patch.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                      map is equivalent to an element of matchExpressions, whose key field is "key", the
+                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                    type: object
                 type: object
-              patchControlPlane:
-                default: true
-                description: PatchControlPlane indicates whether to patch control
-                  plane nodes
-                type: boolean
-              patchWorkers:
-                default: true
-                description: PatchWorkers indicates whether to patch worker nodes
-                type: boolean
+                x-kubernetes-map-type: atomic
               paused:
                 default: false
                 description: Paused pauses the patching operation
@@ -167,6 +274,39 @@ spec:
                 description: RespectPDBs indicates whether to respect PodDisruptionBudgets
                   during node drain
                 type: boolean
+              retention:
+                default: {}
+                description: Retention defines how long finished rollout history is
+                  kept.
+                properties:
+                  history:
+                    default: 168h
+                    description: |-
+                      History is how long the PatchJobs of a finished PatchPlan are kept after the plan completed,
+                      failed or was cancelled. Only terminal PatchJobs are ever removed. Once removed the plan is
+                      frozen; create a new PatchPlan to roll out again.
+                    pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
+                    type: string
+                type: object
+              strategy:
+                default: {}
+                description: Strategy defines the order in which groups are rolled
+                  out.
+                properties:
+                  order:
+                    default:
+                    - controlPlane
+                    - workers
+                    description: |-
+                      Order lists the groups from first to last. Every group completes before the next one starts,
+                      and a node matching several groups is patched by the first one listed. Nodes matching no
+                      listed group are not patched. The order is used exactly as written.
+                    items:
+                      type: string
+                    maxItems: 34
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               talosConfig:
                 description: TalosConfig contains Talos API connection information
                 properties:
@@ -248,8 +388,8 @@ spec:
                     description: |-
                       KubernetesVersion is the desired Kubernetes version (e.g., v1.32.4). Omit to leave the
                       Kubernetes version untouched and only upgrade TalosVersion.
-                      Requires ControlPlaneFirst and PatchControlPlane to be true, since kubelets must never run
-                      newer than the control plane they connect to.
+                      Preflight requires strategy.order to schedule every control plane node before any worker
+                      node, since kubelets must never run newer than the control plane they connect to.
                     type: string
                   schematicID:
                     description: |-
@@ -288,12 +428,6 @@ spec:
                 when target.autoUpdate is enabled
               rule: '!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled)
                 || (!has(self.target.talosVersion) && !has(self.target.kubernetesVersion))'
-            - message: controlPlaneFirst must be true when target.kubernetesVersion
-                is set
-              rule: '!has(self.target.kubernetesVersion) || self.controlPlaneFirst'
-            - message: patchControlPlane must be true when target.kubernetesVersion
-                is set
-              rule: '!has(self.target.kubernetesVersion) || self.patchControlPlane'
           status:
             description: PatchPlanStatus defines the observed state of PatchPlan
             properties:
@@ -394,6 +528,64 @@ spec:
                 description: FailedNodes is the number of nodes that failed to patch
                   (derived from PatchJobs)
                 type: integer
+              failuresAcknowledged:
+                description: |-
+                  FailuresAcknowledged is the number of failed nodes a user accepted by resuming a plan that
+                  the Pause failure policy paused. Only failures beyond it count towards the policy.
+                type: integer
+              groups:
+                description: Groups reports the rollout progress per group, in strategy.order.
+                items:
+                  description: GroupStatus is the rollout progress of one group.
+                  properties:
+                    active:
+                      description: Active is the number of Leases currently held by
+                        the group.
+                      type: integer
+                    completed:
+                      description: Completed is the number of nodes patched successfully.
+                      type: integer
+                    concurrency:
+                      description: Concurrency is the configured maximum of simultaneously
+                        active PatchJobs.
+                      type: integer
+                    failed:
+                      description: Failed is the number of nodes whose PatchJob failed.
+                      type: integer
+                    name:
+                      description: Name is the group name.
+                      type: string
+                    pending:
+                      description: Pending is the number of nodes without a PatchJob
+                        yet.
+                      type: integer
+                    running:
+                      description: Running is the number of nodes whose PatchJob has
+                        not finished.
+                      type: integer
+                    total:
+                      description: Total is the number of unique nodes this group
+                        schedules.
+                      type: integer
+                  required:
+                  - active
+                  - completed
+                  - concurrency
+                  - failed
+                  - name
+                  - pending
+                  - running
+                  - total
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              historyPurged:
+                description: |-
+                  HistoryPurged is set once the finished PatchJobs were removed after spec.retention.history.
+                  The plan is frozen from then on.
+                type: boolean
               kubeProxyUpgraded:
                 description: |-
                   KubeProxyUpgraded indicates whether the cluster-wide kube-proxy DaemonSet image has been
@@ -410,6 +602,11 @@ spec:
                 description: Message contains human-readable message about current
                   state
                 type: string
+              pendingNodes:
+                default: 0
+                description: PendingNodes is the number of nodes that have no PatchJob
+                  yet (derived from PatchJobs)
+                type: integer
               phase:
                 description: Phase represents the current phase of the patching operation
                 enum:
@@ -422,6 +619,11 @@ spec:
                 - Failed
                 - Watching
                 type: string
+              runningNodes:
+                default: 0
+                description: RunningNodes is the number of nodes with a PatchJob that
+                  has not finished (derived from PatchJobs)
+                type: integer
               startTime:
                 description: StartTime is when the patching operation started
                 format: date-time
@@ -435,12 +637,15 @@ spec:
                   from spec.target
                 type: string
               totalNodes:
-                description: TotalNodes is the total number of nodes selected for
-                  patching
+                description: |-
+                  TotalNodes is the number of unique nodes the rollout covers: selected by nodeSelector and
+                  claimed by a group in strategy.order.
                 type: integer
             required:
             - completedNodes
             - failedNodes
+            - pendingNodes
+            - runningNodes
             type: object
         type: object
     served: true

@@ -15,9 +15,9 @@ Key features:
 ## How it works
 
 The operator watches PatchPlan resources. When you create one, it:
-1. Selects nodes based on labels and role
+1. Selects the nodes named by `nodeSelector` and assigns each to the first matching group in `strategy.order`
 2. For each node: drain → upgrade → reboot → verify
-3. Respects your concurrency, timing, and failure settings
+3. Respects the per-group concurrency, timing, and failure settings
 
 If failures exceed your threshold, it stops automatically.
 
@@ -85,13 +85,16 @@ spec:
     talosVersion: v1.11.6
     source: ghcr
   
-  # Patch workers first, then control plane
-  patchWorkers: true
-  patchControlPlane: true
-  controlPlaneFirst: false
-  
-  # Batch configuration
-  maxConcurrency: 1
+  # Control plane first, then workers (this is the default order)
+  strategy:
+    order: [controlPlane, workers]
+
+  # Batch configuration: how many nodes of a group are patched at once
+  groups:
+    controlPlane:
+      concurrency: 1
+    workers:
+      concurrency: 1
   
   # Timing
   delayBetweenNodes: 300s
@@ -100,7 +103,9 @@ spec:
   respectPDBs: true
   drainTimeout: 5m
   rebootTimeout: 10m
-  maxFailures: 1
+  failurePolicy:
+    type: Halt
+    maxFailures: 1
   
   # Talos API
   talosConfig:
@@ -143,9 +148,9 @@ spec:
     schematicID: 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
     secureBoot: true
   
-  patchWorkers: true
-  patchControlPlane: true
-  maxConcurrency: 2
+  groups:
+    workers:
+      concurrency: 2
   
   talosConfig:
     endpoints:
@@ -286,9 +291,8 @@ spec:
   target:
     talosVersion: v1.13.10
     source: ghcr
-  patchWorkers: true
-  patchControlPlane: true
-  maxConcurrency: 1
+  groups:
+    workers: {concurrency: 1}
   talosConfig:
     endpoints: ["10.0.0.10:50000"]
     secretRef: {name: talos-credentials, namespace: kangal-patch}
@@ -306,9 +310,8 @@ spec:
   target:
     talosVersion: v1.14.0
     source: ghcr
-  patchWorkers: true
-  patchControlPlane: true
-  maxConcurrency: 1
+  groups:
+    workers: {concurrency: 1}
   talosConfig:
     endpoints: ["10.0.0.10:50000"]
     secretRef: {name: talos-credentials, namespace: kangal-patch}
@@ -381,12 +384,16 @@ kubectl get patchplan
 Before the first `PatchJob` of a `PatchPlan` is created, the controller runs these checks once
 (phase `Preflighting`) and schedules nothing until all pass:
 
-- the node selection resolves to at least one node
+- the node selection resolves to at least one node, and `strategy.order` is valid and claims at least one of them
+- when `target.kubernetesVersion` is set, `strategy.order` schedules every control plane node before any worker node (the order is never changed for you)
 - no other `InProgress` or `Paused` PatchPlan targets any of the same nodes (auto-update templates are ignored)
 - the Kubernetes API reports ready (`/readyz`)
 - the Talos credentials work against the configured endpoints, and every selected node answers on the Talos API
 - the Talos installer image exists in the registry for nodes that still need the upgrade
-- `target.kubernetesVersion` is supported by the target (or, if unset, the current) Talos version
+- the Talos/Kubernetes support matrix accepts the combination every node ends up with (the target
+  versions, or the version a node keeps if only the other one changes); the current combination is reported
+
+The resulting rollout plan (nodes and concurrency per group) is part of the `PreflightPassed` condition message.
 
 On failure the plan moves to `Failed`, the `PreflightPassed` condition carries the reason and
 message, and the checks are retried every minute, so fixing the cause (e.g. a Secret) recovers the
@@ -398,21 +405,80 @@ kubectl get patchplan simple-upgrade -o jsonpath='{.status.conditions}' | jq
 
 ## Configuration Reference
 
+### Groups, Strategy and Concurrency
+
+`nodeSelector` defines the complete population of a plan. `groups` are label filters over that
+population and never add nodes; they may overlap. `strategy.order` lists the groups from first to
+last and resolves overlaps: **the first listed group a node matches schedules it, and a node is
+patched at most once per plan**. `workers` (non-control-plane nodes) and `controlPlane` are built in
+and need not be declared.
+
+```yaml
+spec:
+  nodeSelector:
+    matchLabels:
+      environment: production
+  groups:
+    database:
+      selector:
+        matchLabels: {workload: database}
+      concurrency: 1
+    kafka:
+      selector:
+        matchLabels: {workload: kafka}
+      concurrency: 1
+    gpu:
+      selector:
+        matchLabels: {accelerator: nvidia}
+      concurrency: 2
+    workers:        # built in, declared only to set its concurrency
+      concurrency: 3
+  strategy:
+    order: [database, kafka, gpu, workers, controlPlane]
+  failurePolicy:
+    type: Halt
+    maxFailures: 1
+  retention:
+    history: 168h
+```
+
+- Groups run strictly in `strategy.order`: a group starts once every earlier group has finished.
+  The order is used exactly as written; with `strategy.order` omitted it is `[controlPlane, workers]`.
+- Selected nodes that no listed group claims are not patched. Omit `workers` (or `controlPlane`) to
+  leave those nodes alone.
+- `concurrency` is per group and is enforced with Leases. Every active `PatchJob` holds one Lease in
+  the operator namespace, labelled `kangalpatch.ozalp.dk/patchplan` and `kangalpatch.ozalp.dk/group`,
+  from creation until the job is `Completed` or `Failed`, whatever phase it is in. The live concurrency
+  of a group is the number of its Leases:
+  `kubectl -n kangal-patch get lease -l kangalpatch.ozalp.dk/patchplan=<plan>,kangalpatch.ozalp.dk/group=<group>`.
+- `delayBetweenNodes` is the minimum time between two scheduling rounds of the plan; a round fills
+  all free slots of the current group.
+- `failurePolicy` is independent of concurrency and triggers once `maxFailures` (default `1`) nodes
+  failed. `Halt` (default) marks the plan `Failed`. `Pause` sets `spec.paused: true` so you can
+  inspect the failed `PatchJobs`, delete one to have its node retried, then set `paused: false` to
+  resume; resuming accepts the failures seen so far (`status.failuresAcknowledged`) and the plan
+  pauses again after `maxFailures` further failures. Running nodes are never interrupted.
+- `retention.history` (default `168h`): after the plan completed, failed or was cancelled, its
+  finished `PatchJobs` are removed once this time has passed (only when none is still running). The
+  plan is frozen afterwards (`status.historyPurged`); create a new `PatchPlan` to roll out again.
+- Status shows `totalNodes` (unique nodes in the rollout), `pendingNodes`, `runningNodes`,
+  `completedNodes`, `failedNodes`, and a `status.groups` breakdown in schedule order.
+
 ### PatchPlan Spec
 
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
 | `target` | object | Target Talos and/or Kubernetes version specification | Required |
-| `nodeSelector` | map | Label selector for nodes | `{}` |
-| `maxConcurrency` | int | Max nodes to patch concurrently | `1` |
-| `maxFailures` | int | Max allowed failures before stopping | `0` |
-| `delayBetweenNodes` | duration | Delay between nodes | `5m` |
+| `nodeSelector` | LabelSelector | Complete population of nodes the plan may patch | all nodes |
+| `groups` | map | Custom node groups: `selector` (label selector) and `concurrency` (min 1, default 1). `workers`/`controlPlane` are built in | `{}` |
+| `strategy.order` | []string | Group evaluation and rollout order | `[controlPlane, workers]` |
+| `failurePolicy.type` | string | `Halt` or `Pause` | `Halt` |
+| `failurePolicy.maxFailures` | int | Failed nodes the policy reacts to | `1` |
+| `retention.history` | duration | How long finished PatchJobs are kept | `168h` |
+| `delayBetweenNodes` | duration | Minimum time between scheduling rounds | `5m` |
 | `respectPDBs` | bool | Respect PodDisruptionBudgets | `true` |
 | `drainTimeout` | duration | Max time for node drain | `5m` |
 | `rebootTimeout` | duration | Max time for reboot | `10m` |
-| `patchControlPlane` | bool | Patch control plane nodes | `true` |
-| `patchWorkers` | bool | Patch worker nodes | `true` |
-| `controlPlaneFirst` | bool | Patch control plane first | `false` |
 | `paused` | bool | Pause operation | `false` |
 | `cancelled` | bool | Permanently cancel operation | `false` |
 | `maintenance` | object | Maintenance window configuration | `nil` |
@@ -421,9 +487,9 @@ kubectl get patchplan simple-upgrade -o jsonpath='{.status.conditions}' | jq
 
 At least one of `talosVersion`/`kubernetesVersion` (or an enabled `autoUpdate`) must be set; both
 can be set to upgrade both
-in the same PatchPlan. Setting `kubernetesVersion` requires `controlPlaneFirst` and
-`patchControlPlane` to be `true`, since a kubelet must never run newer than the control plane it
-connects to.
+in the same PatchPlan. Setting `kubernetesVersion` requires `strategy.order` to schedule every control
+plane node before any worker node (checked in preflight), since a kubelet must never run newer than
+the control plane it connects to.
 
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|

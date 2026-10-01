@@ -6,7 +6,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -22,6 +21,7 @@ import (
 	"github.com/uozalp/kangal-patch/internal/maintenance"
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/patchutil"
+	"github.com/uozalp/kangal-patch/internal/scheduling"
 )
 
 // PatchPlanReconciler reconciles a PatchPlan object
@@ -35,15 +35,16 @@ type PatchPlanReconciler struct {
 	Releases releaseLister
 }
 
+// JobCounts are the PatchJob outcomes of the unique nodes covered by the rollout.
 type JobCounts struct {
-	Completed  int
-	Failed     int
-	InProgress int
+	Completed int
+	Failed    int
+	Running   int
+	Pending   int
 }
 
 // Requeue intervals for different reconciliation scenarios
 const (
-	requeueWhenLeasesFull       = 2 * time.Second  // waiting for lease slots to free up
 	requeueWhenAtMaxConcurrency = 5 * time.Second  // waiting for job completion to free capacity
 	requeueForNextNode          = 10 * time.Second // interval between scheduling nodes
 	requeueWhenJobsInProgress   = 30 * time.Second // waiting for in-progress jobs to complete
@@ -85,37 +86,49 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.reconcileAutoUpdate(ctx, &patchPlan)
 	}
 
-	// Clean up expired leases first
-	if err := r.cleanupExpiredLeases(ctx, patchPlan.Name); err != nil {
+	// Once finished history is purged the plan is frozen and must not schedule anything again
+	purged, err := r.applyRetention(ctx, &patchPlan)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if purged {
+		return ctrl.Result{}, nil
+	}
 
-	// Get list of all nodes matching selector
+	// Get the nodes selected by the plan and resolve which group schedules each of them
 	nodes, err := nodeutil.ListMatchingNodes(ctx, r.Client, patchPlan.Spec.NodeSelector)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	rollout, err := scheduling.Resolve(nodes, patchPlan.Spec)
+	if err != nil {
+		return r.failInvalidStrategy(ctx, &patchPlan, err)
+	}
 
-	// Split nodes by role
-	controlPlaneNodes, workerNodes := nodeutil.SplitByRole(nodes)
-
-	// Order target nodes based on spec
-	targetNodes := nodeutil.OrderTargetNodes(controlPlaneNodes, workerNodes, patchPlan.Spec)
-
-	// Get list of existing PatchJobs and compute counts
-	jobsByNode, jobSummary, err := r.fetchPatchJobSummary(ctx, patchPlan.Name)
+	// Get list of existing PatchJobs
+	jobs, err := r.listPatchJobs(ctx, patchPlan.Name)
 	if err != nil {
 		logger.Error(err, "unable to list PatchJobs")
+		return ctrl.Result{}, err
+	}
+	jobsByNode := make(map[string]*patchv1alpha1.PatchJob, len(jobs))
+	for i := range jobs {
+		jobsByNode[jobs[i].Spec.NodeName] = &jobs[i]
+	}
+
+	// Leases are the source of truth for concurrency: release finished jobs, heal missing ones
+	activeLeases, err := r.syncLeases(ctx, &patchPlan, rollout, jobs)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Update status counts and total nodes
 	original := patchPlan.DeepCopy()
-	patchPlan.Status.TotalNodes = len(targetNodes)
+	jobSummary := summarize(&patchPlan, rollout, jobsByNode, activeLeases)
+	// Deleting accepted failed jobs (to retry them) must not leave a credit for future failures
+	patchPlan.Status.FailuresAcknowledged = min(patchPlan.Status.FailuresAcknowledged, jobSummary.Failed)
 	patchPlan.Status.TargetTalosVersion = patchPlan.Spec.Target.TalosVersion
 	patchPlan.Status.TargetKubernetesVersion = patchPlan.Spec.Target.KubernetesVersion
-	patchPlan.Status.CompletedNodes = jobSummary.Completed
-	patchPlan.Status.FailedNodes = jobSummary.Failed
 
 	if !equality.Semantic.DeepEqual(original.Status, patchPlan.Status) {
 		if err := r.patchStatus(ctx, original, &patchPlan); err != nil {
@@ -129,11 +142,11 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 	if cancelled {
-		return ctrl.Result{}, nil
+		return terminalResult(&patchPlan), nil
 	}
 
 	// Handle pause/resume state
-	paused, err := r.ensurePauseState(ctx, &patchPlan)
+	paused, err := r.ensurePauseState(ctx, &patchPlan, jobSummary.Failed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -142,7 +155,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Validate the plan once before any PatchJob exists; nothing is scheduled until it passes
-	preflightPassed, err := r.ensurePreflight(ctx, &patchPlan, targetNodes, jobsByNode)
+	preflightPassed, err := r.ensurePreflight(ctx, &patchPlan, rollout, jobsByNode)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -151,21 +164,21 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if all nodes are processed
-	allProcessed, err := r.allNodesProcessed(ctx, &patchPlan, jobSummary, len(targetNodes))
+	allProcessed, err := r.allNodesProcessed(ctx, &patchPlan, jobSummary, rollout.Total())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if allProcessed {
-		return ctrl.Result{}, nil
+		return terminalResult(&patchPlan), nil
 	}
 
-	// Check MaxFailures
+	// Check the failure policy
 	failureBudgetExceeded, err := r.failureBudgetExceeded(ctx, &patchPlan, jobSummary.Failed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if failureBudgetExceeded {
-		return ctrl.Result{}, nil
+		return terminalResult(&patchPlan), nil
 	}
 
 	// Check maintenance window
@@ -183,82 +196,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
 
-	// Check if we should wait for leases to expire
-	leaseCapacityReached, err := r.leaseCapacityReached(ctx, patchPlan.Name, patchPlan.Spec.MaxConcurrency)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if leaseCapacityReached {
-		return ctrl.Result{RequeueAfter: requeueWhenLeasesFull}, nil
-	}
-
-	// Check concurrency limit
-	if r.maxConcurrencyReached(ctx, &patchPlan, jobSummary.InProgress) {
-		return ctrl.Result{RequeueAfter: requeueWhenAtMaxConcurrency}, nil
-	}
-
-	// Find next node to patch
-	nextNode := nodeutil.FindNextUnpatchedNode(targetNodes, jobsByNode)
-	if nextNode == nil {
-		// No more nodes to patch, wait for in-progress jobs
-		logger.Info("no more nodes to schedule, waiting for in-progress jobs", "inProgress", jobSummary.InProgress)
-
-		return ctrl.Result{RequeueAfter: requeueWhenJobsInProgress}, nil
-	}
-
-	// Kubernetes upgrades must fully land on every control plane node (apiserver, kubelet) before
-	// any worker's kubelet is bumped or the cluster-wide kube-proxy DaemonSet is upgraded - a
-	// kubelet must never run newer than the apiserver it connects to.
-	if patchPlan.Spec.Target.KubernetesVersion != "" && len(controlPlaneNodes) > 0 && !nodeutil.IsControlPlane(nextNode) {
-		if !allNodesCompleted(controlPlaneNodes, jobsByNode) {
-			logger.Info("waiting for control plane nodes to finish kubernetes upgrade before patching workers")
-			return ctrl.Result{RequeueAfter: requeueWhenJobsInProgress}, nil
-		}
-
-		if !patchPlan.Status.KubeProxyUpgraded {
-			done, err := r.ensureKubeProxyUpgraded(ctx, patchPlan.Spec.Target.KubernetesVersion)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-			if !done {
-				logger.Info("waiting for kube-proxy rollout before patching workers")
-				return ctrl.Result{RequeueAfter: requeueForNextNode}, nil
-			}
-
-			kubeProxyOriginal := patchPlan.DeepCopy()
-			patchPlan.Status.KubeProxyUpgraded = true
-			if err := r.patchStatus(ctx, kubeProxyOriginal, &patchPlan); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	}
-
-	// Set phase to InProgress before creating job (handles retry scenarios)
-	if patchPlan.Status.Phase == patchv1alpha1.PatchPhasePending ||
-		patchPlan.Status.Phase == patchv1alpha1.PatchPhaseFailed ||
-		patchPlan.Status.Phase == patchv1alpha1.PatchPhaseCompleted ||
-		patchPlan.Status.Phase == patchv1alpha1.PatchPhaseCancelled ||
-		patchPlan.Status.Phase == "" {
-		original := patchPlan.DeepCopy()
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseInProgress
-		if patchPlan.Status.StartTime == nil {
-			patchPlan.Status.StartTime = &metav1.Time{Time: time.Now()}
-		}
-		// Clear completion time if resuming after completion/failure
-		patchPlan.Status.CompletionTime = nil
-
-		if err := r.patchStatus(ctx, original, &patchPlan); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Create PatchJob for the next node
-	if err := r.createPatchJob(ctx, &patchPlan, nextNode); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Requeue to schedule next node
-	return ctrl.Result{RequeueAfter: requeueForNextNode}, nil
+	return r.scheduleNodes(ctx, &patchPlan, rollout, jobsByNode, activeLeases)
 }
 
 // SetupWithManager sets up the controller with the Manager
@@ -281,19 +219,33 @@ func (r *PatchPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// failureBudgetExceeded checks if the PatchPlan has reached the maximum allowed failures.
-// Returns true if max failures reached and the plan should stop.
+// newFailures is the number of failed nodes the user has not yet accepted by resuming the plan.
+func newFailures(patchPlan *patchv1alpha1.PatchPlan, failed int) int {
+	return max(failed-patchPlan.Status.FailuresAcknowledged, 0)
+}
+
+// failureBudgetExceeded applies the failurePolicy once enough nodes failed: Halt marks the plan
+// Failed, Pause pauses it for inspection. Returns true if scheduling must stop.
 func (r *PatchPlanReconciler) failureBudgetExceeded(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, failedCount int) (bool, error) {
-	if failedCount < patchPlan.Spec.MaxFailures {
+	policy := patchPlan.Spec.FailurePolicy
+	if !policy.Exceeded(newFailures(patchPlan, failedCount)) {
 		return false, nil
 	}
 
 	logger := log.FromContext(ctx)
 
+	if policy.Type == patchv1alpha1.FailurePolicyPause {
+		if err := r.pauseOnFailures(ctx, patchPlan, failedCount); err != nil {
+			return true, err
+		}
+		logger.Info("PatchPlan paused due to failure policy", "failed", failedCount, "maxFailures", policy.MaxFailures)
+		return true, nil
+	}
+
 	if patchPlan.Status.Phase != patchv1alpha1.PatchPhaseFailed {
 		original := patchPlan.DeepCopy()
 		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseFailed
-		patchPlan.Status.Message = fmt.Sprintf("maximum failures reached: %d/%d", failedCount, patchPlan.Spec.MaxFailures)
+		patchPlan.Status.Message = fmt.Sprintf("failure policy Halt: %d failed node(s), maxFailures %d", failedCount, policy.MaxFailures)
 		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
 
 		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
@@ -301,24 +253,25 @@ func (r *PatchPlanReconciler) failureBudgetExceeded(ctx context.Context, patchPl
 		}
 	}
 
-	logger.Info("PatchPlan failed due to max failures", "failed", failedCount, "max", patchPlan.Spec.MaxFailures)
+	logger.Info("PatchPlan failed due to failure policy", "failed", failedCount, "maxFailures", policy.MaxFailures)
 	return true, nil
 }
 
-// maxConcurrencyReached verifies if the current number of in-progress jobs
-// has reached the maximum concurrency limit.
-// Returns true if at capacity and scheduling should wait.
-func (r *PatchPlanReconciler) maxConcurrencyReached(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, inProgressCount int) bool {
-	if inProgressCount < patchPlan.Spec.MaxConcurrency {
-		return false
+// pauseOnFailures sets spec.paused so the regular pause handling takes over; the user resumes by
+// setting it back to false.
+func (r *PatchPlanReconciler) pauseOnFailures(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, failedCount int) error {
+	if !patchPlan.Spec.Paused {
+		originalSpec := patchPlan.DeepCopy()
+		patchPlan.Spec.Paused = true
+		if err := r.Patch(ctx, patchPlan, client.MergeFrom(originalSpec)); err != nil {
+			return fmt.Errorf("failed to pause PatchPlan: %w", err)
+		}
 	}
 
-	logger := log.FromContext(ctx)
-	logger.Info("at max concurrency, waiting for job completion",
-		"inProgress", inProgressCount,
-		"max", patchPlan.Spec.MaxConcurrency)
-
-	return true
+	original := patchPlan.DeepCopy()
+	patchPlan.Status.Phase = patchv1alpha1.PatchPhasePaused
+	patchPlan.Status.Message = fmt.Sprintf("Paused by failure policy: %d failed node(s). Inspect or delete the failed PatchJobs, then set spec.paused=false to resume", failedCount)
+	return r.patchStatus(ctx, original, patchPlan)
 }
 
 // allNodesCompleted returns true if every node has a Completed PatchJob in jobsByNode.
@@ -366,179 +319,6 @@ func (r *PatchPlanReconciler) ensureKubeProxyUpgraded(ctx context.Context, kuber
 	return rolledOut, nil
 }
 
-// cleanupExpiredLeases removes all expired leases for the given PatchPlan.
-// This ensures expired leases don't clutter the system.
-func (r *PatchPlanReconciler) cleanupExpiredLeases(ctx context.Context, planName string) error {
-	logger := log.FromContext(ctx)
-
-	leaseList := &coordinationv1.LeaseList{}
-	leaseLabels := client.MatchingLabels{"kangalpatch.ozalp.dk/patchplan": planName}
-	if err := r.List(ctx, leaseList, leaseLabels, client.InNamespace(r.Namespace)); err != nil {
-		logger.Error(err, "unable to list leases")
-		return err
-	}
-
-	now := time.Now()
-	deletedCount := 0
-
-	for i := range leaseList.Items {
-		lease := &leaseList.Items[i]
-		if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
-			continue
-		}
-
-		expiryTime := lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
-		if now.After(expiryTime) {
-			if err := r.Delete(ctx, lease); err != nil {
-				logger.Error(err, "unable to delete expired lease", "lease", lease.Name)
-				return err
-			}
-			deletedCount++
-		}
-	}
-
-	if deletedCount > 0 {
-		logger.Info("deleted expired leases", "count", deletedCount)
-	}
-
-	return nil
-}
-
-// leaseCapacityReached checks if scheduling should wait for leases to expire.
-// Returns true if all lease slots are occupied and scheduling must wait.
-func (r *PatchPlanReconciler) leaseCapacityReached(ctx context.Context, planName string, maxConcurrency int) (bool, error) {
-	logger := log.FromContext(ctx)
-
-	// Get leases for this plan
-	leaseList := &coordinationv1.LeaseList{}
-	leaseLabels := client.MatchingLabels{"kangalpatch.ozalp.dk/patchplan": planName}
-	if err := r.List(ctx, leaseList, leaseLabels, client.InNamespace(r.Namespace)); err != nil {
-		logger.Error(err, "unable to list leases")
-		return false, err
-	}
-
-	// Count active (non-expired) leases
-	now := time.Now()
-	activeLeases := 0
-	for i := range leaseList.Items {
-		lease := &leaseList.Items[i]
-		if lease.Spec.RenewTime != nil && lease.Spec.LeaseDurationSeconds != nil {
-			expiryTime := lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
-			if now.Before(expiryTime) {
-				activeLeases++
-			}
-		}
-	}
-
-	// Check if we need to wait
-	availableSlots := maxConcurrency - activeLeases
-	shouldWait := availableSlots <= 0
-
-	if shouldWait {
-		logger.Info("waiting for lease to expire", "activeLeases", activeLeases, "max", maxConcurrency)
-	}
-
-	return shouldWait, nil
-}
-
-// createSchedulingLease creates a rate-limiting lease for node scheduling.
-// The lease duration equals delayBetweenNodes and prevents scheduling the next node too quickly.
-func (r *PatchPlanReconciler) createSchedulingLease(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, patchJob *patchv1alpha1.PatchJob, nodeName string) error {
-	logger := log.FromContext(ctx)
-
-	delayBetweenNodes := patchPlan.Spec.DelayBetweenNodes.Duration
-
-	leaseDurationSeconds := int32(delayBetweenNodes.Seconds())
-	renewTime := metav1.NewMicroTime(time.Now())
-
-	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-%s-scheduling", patchPlan.Name, nodeName),
-			Namespace: r.Namespace,
-			Labels: map[string]string{
-				"kangalpatch.ozalp.dk/patchplan": patchPlan.Name,
-				"kangalpatch.ozalp.dk/node":      nodeName,
-				"kangalpatch.ozalp.dk/patchjob":  patchJob.Name,
-				"kangalpatch.ozalp.dk/group":     "xxx", // TODO: hardcoded until group support is added
-			},
-		},
-		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       &patchJob.Name,
-			LeaseDurationSeconds: &leaseDurationSeconds,
-			RenewTime:            &renewTime,
-		},
-	}
-
-	if err := ctrl.SetControllerReference(patchJob, lease, r.Scheme); err != nil {
-		logger.Error(err, "unable to set owner reference on Lease")
-		return err
-	}
-
-	if err := r.Create(ctx, lease); err != nil {
-		logger.Error(err, "unable to create Lease", "lease", lease.Name)
-		return err
-	}
-
-	logger.Info("created rate-limiting Lease", "lease", lease.Name, "duration", delayBetweenNodes)
-	return nil
-}
-
-// createPatchJob creates a new PatchJob for the given node and updates the PatchPlan status.
-// Returns the created PatchJob or an error.
-func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, node *corev1.Node) error {
-	logger := log.FromContext(ctx)
-
-	// Create PatchJob
-	patchJob := &patchv1alpha1.PatchJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("%s-%s", patchPlan.Name, node.Name),
-			Labels: map[string]string{
-				"kangalpatch.ozalp.dk/patchplan": patchPlan.Name,
-				"kangalpatch.ozalp.dk/node":      node.Name,
-			},
-		},
-		Spec: patchv1alpha1.PatchJobSpec{
-			NodeName:     node.Name,
-			Target:       patchPlan.Spec.Target,
-			PatchPlanRef: patchPlan.Name,
-		},
-	}
-
-	// Set owner reference so PatchJob is deleted when PatchPlan is deleted
-	if err := ctrl.SetControllerReference(patchPlan, patchJob, r.Scheme); err != nil {
-		logger.Error(err, "unable to set owner reference on PatchJob")
-		return err
-	}
-
-	if err := r.Create(ctx, patchJob); err != nil {
-		if !errors.IsAlreadyExists(err) {
-			logger.Error(err, "unable to create PatchJob", "node", node.Name)
-			return err
-		}
-	}
-
-	// Update PatchPlan status before creating the job
-	original := patchPlan.DeepCopy()
-	patchPlan.Status.LastNodeScheduledAt = &metav1.Time{Time: metav1.Now().Time}
-	patchPlan.Status.Message = fmt.Sprintf("Patching node %s", node.Name)
-
-	if err := r.patchStatus(ctx, original, patchPlan); err != nil {
-		logger.Error(err, "unable to update PatchPlan status")
-		return err
-	}
-
-	logger.Info("Created PatchJob", "node", node.Name, "job", patchJob.Name)
-
-	// Create rate-limiting lease to enforce delay between node scheduling
-	if err := r.createSchedulingLease(ctx, patchPlan, patchJob, node.Name); err != nil {
-		logger.Error(err, "failed to create scheduling lease", "node", node.Name)
-		// Note: We don't return error here since the PatchJob was created successfully
-		// The lease creation failure will just mean less rate limiting
-	}
-
-	return nil
-}
-
 // ensureCancelledState checks if the PatchPlan has been cancelled and updates the status
 // accordingly. Returns true if cancelled, in which case Reconcile must stop scheduling new
 // nodes; unlike pause this is a terminal phase and the reconciler does not requeue.
@@ -567,7 +347,7 @@ func (r *PatchPlanReconciler) ensureCancelledState(ctx context.Context, patchPla
 
 // ensurePauseState checks if the PatchPlan is paused or resuming from pause
 // and updates the status accordingly.
-func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan) (shouldPause bool, err error) {
+func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, failedCount int) (shouldPause bool, err error) {
 	logger := log.FromContext(ctx)
 
 	// Check if paused
@@ -591,6 +371,11 @@ func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *p
 		original := patchPlan.DeepCopy()
 		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseInProgress
 		patchPlan.Status.Message = "Resuming patching operation"
+		// Resuming a plan the failure policy paused accepts the failures seen so far
+		if patchPlan.Spec.FailurePolicy.Type == patchv1alpha1.FailurePolicyPause &&
+			patchPlan.Spec.FailurePolicy.Exceeded(newFailures(patchPlan, failedCount)) {
+			patchPlan.Status.FailuresAcknowledged = failedCount
+		}
 
 		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
 			logger.Error(err, "unable to update PatchPlan status")
@@ -606,35 +391,56 @@ func (r *PatchPlanReconciler) patchStatus(ctx context.Context, original, modifie
 	return patchutil.PatchStatus(ctx, r.Status(), original, modified)
 }
 
-// fetchPatchJobSummary retrieves all PatchJobs for a PatchPlan and counts them by status phase.
-// It returns a map of node names to their corresponding PatchJobs and aggregated counts.
-func (r *PatchPlanReconciler) fetchPatchJobSummary(ctx context.Context, planName string) (map[string]*patchv1alpha1.PatchJob, JobCounts, error) {
+// listPatchJobs returns all PatchJobs belonging to a PatchPlan.
+func (r *PatchPlanReconciler) listPatchJobs(ctx context.Context, planName string) ([]patchv1alpha1.PatchJob, error) {
 	patchJobList := &patchv1alpha1.PatchJobList{}
 	if err := r.List(ctx, patchJobList, client.MatchingFields{"spec.patchPlanRef": planName}); err != nil {
-		return nil, JobCounts{}, err
+		return nil, err
 	}
+	return patchJobList.Items, nil
+}
 
-	jobsByNode := make(map[string]*patchv1alpha1.PatchJob)
-	var counts JobCounts
+// summarize counts each unique node of the rollout once by the outcome of its PatchJob and fills
+// the totals and per-group breakdown of the plan status.
+func summarize(patchPlan *patchv1alpha1.PatchPlan, rollout *scheduling.Rollout, jobsByNode map[string]*patchv1alpha1.PatchJob, activeLeases map[string]int) JobCounts {
+	var total JobCounts
+	groups := make([]patchv1alpha1.GroupStatus, 0, len(rollout.Groups))
 
-	for i := range patchJobList.Items {
-		job := &patchJobList.Items[i]
-		jobsByNode[job.Spec.NodeName] = job
-
-		switch job.Status.Phase {
-		case patchv1alpha1.PatchJobPhaseCompleted:
-			counts.Completed++
-		case patchv1alpha1.PatchJobPhaseFailed:
-			counts.Failed++
-		case patchv1alpha1.PatchJobPhasePending,
-			patchv1alpha1.PatchJobPhaseDraining,
-			patchv1alpha1.PatchJobPhaseUpgrading,
-			patchv1alpha1.PatchJobPhaseRebooting:
-			counts.InProgress++
+	for i := range rollout.Groups {
+		g := &rollout.Groups[i]
+		gs := patchv1alpha1.GroupStatus{
+			Name:        g.Name,
+			Concurrency: g.Concurrency,
+			Active:      activeLeases[g.Name],
+			Total:       len(g.Nodes),
 		}
+		for j := range g.Nodes {
+			job, ok := jobsByNode[g.Nodes[j].Name]
+			switch {
+			case !ok:
+				gs.Pending++
+			case job.Status.Phase == patchv1alpha1.PatchJobPhaseCompleted:
+				gs.Completed++
+			case job.Status.Phase == patchv1alpha1.PatchJobPhaseFailed:
+				gs.Failed++
+			default:
+				gs.Running++
+			}
+		}
+		total.Completed += gs.Completed
+		total.Failed += gs.Failed
+		total.Running += gs.Running
+		total.Pending += gs.Pending
+		groups = append(groups, gs)
 	}
 
-	return jobsByNode, counts, nil
+	patchPlan.Status.TotalNodes = rollout.Total()
+	patchPlan.Status.CompletedNodes = total.Completed
+	patchPlan.Status.FailedNodes = total.Failed
+	patchPlan.Status.RunningNodes = total.Running
+	patchPlan.Status.PendingNodes = total.Pending
+	patchPlan.Status.Groups = groups
+	return total
 }
 
 // allNodesProcessed checks if all target nodes have been processed (completed or failed).
