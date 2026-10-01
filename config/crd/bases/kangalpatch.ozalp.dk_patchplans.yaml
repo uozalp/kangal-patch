@@ -169,6 +169,12 @@ spec:
                   declared; declaring them only sets their concurrency.
                 maxProperties: 32
                 type: object
+              kubernetesUpgradeTimeout:
+                default: 10m
+                description: |-
+                  KubernetesUpgradeTimeout is the maximum time to wait for the kubelet and control plane static
+                  pods to report the target Kubernetes version
+                type: string
               maintenance:
                 description: Maintenance defines maintenance windows for patching
                   operations

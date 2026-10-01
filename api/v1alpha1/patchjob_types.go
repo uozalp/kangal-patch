@@ -44,6 +44,20 @@ type PatchJobStatus struct {
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
+	// RebootStartTime is when the Talos upgrade was started; the plan's rebootTimeout counts from here
+	// +optional
+	RebootStartTime *metav1.Time `json:"rebootStartTime,omitempty"`
+
+	// KubernetesUpgradeStartTime is when the Kubernetes upgrade patch was applied; the plan's
+	// kubernetesUpgradeTimeout counts from here
+	// +optional
+	KubernetesUpgradeStartTime *metav1.Time `json:"kubernetesUpgradeStartTime,omitempty"`
+
+	// PreUpgradeBootID is the node's boot ID when the Talos upgrade was started, used to detect that
+	// the node rebooted
+	// +optional
+	PreUpgradeBootID string `json:"preUpgradeBootID,omitempty"`
+
 	// CurrentTalosVersion is the Talos version before upgrade
 	// +optional
 	CurrentTalosVersion string `json:"currentTalosVersion,omitempty"`

@@ -153,6 +153,11 @@ type PatchPlanSpec struct {
 	// +kubebuilder:default="10m"
 	RebootTimeout metav1.Duration `json:"rebootTimeout,omitempty"`
 
+	// KubernetesUpgradeTimeout is the maximum time to wait for the kubelet and control plane static
+	// pods to report the target Kubernetes version
+	// +kubebuilder:default="10m"
+	KubernetesUpgradeTimeout metav1.Duration `json:"kubernetesUpgradeTimeout,omitempty"`
+
 	// Paused pauses the patching operation
 	// +kubebuilder:default=false
 	Paused bool `json:"paused,omitempty"`

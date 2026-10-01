@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,6 +35,9 @@ const (
 	requeueForRebootCheck       = 60 * time.Second     // checking if node is back online
 	requeueForKubernetesUpgrade = 5 * time.Second      // starting the kubernetes upgrade patch
 	requeueForKubernetesCheck   = 15 * time.Second     // checking if kubelet/static pods report the new version
+
+	defaultRebootTimeout            = 10 * time.Minute // used when the plan has no rebootTimeout
+	defaultKubernetesUpgradeTimeout = 10 * time.Minute // used when the plan has no kubernetesUpgradeTimeout
 )
 
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchjobs,verbs=get;list;watch;create;update;patch;delete
@@ -238,8 +242,8 @@ func (r *PatchJobReconciler) getNodeAddress(ctx context.Context, nodeName string
 	return nodeutil.GetNodeInternalIP(&node)
 }
 
-// getTalosConfig retrieves Talos configuration from the parent PatchPlan.
-func (r *PatchJobReconciler) getTalosConfig(ctx context.Context, patchJob *patchv1alpha1.PatchJob) (*patchv1alpha1.TalosConfig, error) {
+// getPatchPlan retrieves the parent PatchPlan.
+func (r *PatchJobReconciler) getPatchPlan(ctx context.Context, patchJob *patchv1alpha1.PatchJob) (*patchv1alpha1.PatchPlan, error) {
 	if patchJob.Spec.PatchPlanRef == "" {
 		return nil, fmt.Errorf("patchPlanRef not set")
 	}
@@ -249,7 +253,17 @@ func (r *PatchJobReconciler) getTalosConfig(ctx context.Context, patchJob *patch
 		return nil, fmt.Errorf("failed to get PatchPlan %s: %w", patchJob.Spec.PatchPlanRef, err)
 	}
 
-	return resolveTalosConfig(ctx, r.Client, &patchPlan)
+	return &patchPlan, nil
+}
+
+// getTalosConfig retrieves Talos configuration from the parent PatchPlan.
+func (r *PatchJobReconciler) getTalosConfig(ctx context.Context, patchJob *patchv1alpha1.PatchJob) (*patchv1alpha1.TalosConfig, error) {
+	patchPlan, err := r.getPatchPlan(ctx, patchJob)
+	if err != nil {
+		return nil, err
+	}
+
+	return resolveTalosConfig(ctx, r.Client, patchPlan)
 }
 
 // startDrain cordons the node and initiates the drain process
@@ -351,7 +365,12 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 		}
 	}()
 
-	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: patchJob.Spec.NodeName}, &node); err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get node", err)
+	}
+
+	nodeAddr, err := nodeutil.GetNodeInternalIP(&node)
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
 	}
@@ -379,6 +398,8 @@ func (r *PatchJobReconciler) startUpgrade(ctx context.Context, patchJob *patchv1
 	// Update status to rebooting phase
 	patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseRebooting
 	patchJob.Status.Message = "upgrade started, waiting for reboot"
+	patchJob.Status.RebootStartTime = &metav1.Time{Time: time.Now()}
+	patchJob.Status.PreUpgradeBootID = node.Status.NodeInfo.BootID
 
 	if err := r.patchStatus(ctx, original, patchJob); err != nil {
 		logger.Error(err, "failed to update status")
@@ -414,26 +435,69 @@ func (r *PatchJobReconciler) waitForReboot(ctx context.Context, patchJob *patchv
 		}
 	}()
 
-	// Try to get version - this checks both responsiveness and upgrade success
-	nodeAddr, err := r.getNodeAddress(ctx, patchJob.Spec.NodeName)
+	patchPlan, err := r.getPatchPlan(ctx, patchJob)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get PatchPlan", err)
+	}
+
+	// Jobs that entered Rebooting before the start time was recorded get a fresh timeout window
+	if patchJob.Status.RebootStartTime == nil {
+		patchJob.Status.RebootStartTime = &metav1.Time{Time: time.Now()}
+		if err := r.patchStatus(ctx, original, patchJob); err != nil {
+			logger.Error(err, "failed to update status")
+			return ctrl.Result{}, err
+		}
+		original = patchJob.DeepCopy()
+	}
+
+	rebootTimeout := patchPlan.Spec.RebootTimeout.Duration
+	if rebootTimeout <= 0 {
+		rebootTimeout = defaultRebootTimeout
+	}
+	remaining := rebootTimeout - time.Since(patchJob.Status.RebootStartTime.Time)
+	timedOut := remaining <= 0
+	requeueAfter := min(requeueForRebootCheck, max(remaining, requeueImmediate))
+
+	var node corev1.Node
+	if err := r.Get(ctx, types.NamespacedName{Name: patchJob.Spec.NodeName}, &node); err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get node", err)
+	}
+
+	nodeAddr, err := nodeutil.GetNodeInternalIP(&node)
 	if err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to resolve node address", err)
 	}
 
+	// Try to get version - this checks both responsiveness and upgrade success
 	currentVersion, err := talosClient.GetVersion(ctx, nodeAddr)
 	if err != nil {
-		// Node not responsive yet, keep waiting
+		if timedOut {
+			return r.failJob(ctx, original, patchJob, "node did not come back after reboot",
+				fmt.Errorf("no response within %s (last error: %v); node left cordoned, verify it and uncordon manually", rebootTimeout, err))
+		}
 		logger.Info("waiting for node to become responsive", "node", patchJob.Spec.NodeName)
-		return ctrl.Result{RequeueAfter: requeueForRebootCheck}, nil
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	// Check if upgrade succeeded
 	if currentVersion != patchJob.Status.TargetTalosVersion {
+		// A new boot ID with the old version means the node rebooted into the previous partition
+		bootID := patchJob.Status.PreUpgradeBootID
+		if bootID != "" && node.Status.NodeInfo.BootID != bootID {
+			return r.failJob(ctx, original, patchJob, "upgrade rolled back",
+				fmt.Errorf("node rebooted but is running %s, want %s; node left cordoned, verify it and uncordon manually",
+					currentVersion, patchJob.Status.TargetTalosVersion))
+		}
+		if timedOut {
+			return r.failJob(ctx, original, patchJob, "node did not reach target version",
+				fmt.Errorf("running %s, want %s after %s; node left cordoned, verify it and uncordon manually",
+					currentVersion, patchJob.Status.TargetTalosVersion, rebootTimeout))
+		}
 		logger.Info("node responsive but upgrade not complete yet",
 			"node", patchJob.Spec.NodeName,
 			"currentVersion", currentVersion,
 			"targetTalosVersion", patchJob.Status.TargetTalosVersion)
-		return ctrl.Result{RequeueAfter: requeueForRebootCheck}, nil
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	patchJob.Status.CurrentTalosVersion = currentVersion
@@ -515,6 +579,7 @@ func (r *PatchJobReconciler) startKubernetesUpgrade(ctx context.Context, patchJo
 
 	patchJob.Status.Phase = patchv1alpha1.PatchJobPhaseValidatingKubernetes
 	patchJob.Status.Message = "kubernetes upgrade patch applied, waiting for rollout"
+	patchJob.Status.KubernetesUpgradeStartTime = &metav1.Time{Time: time.Now()}
 
 	if err := r.patchStatus(ctx, original, patchJob); err != nil {
 		logger.Error(err, "failed to update status")
@@ -534,6 +599,29 @@ func (r *PatchJobReconciler) waitForKubernetesUpgrade(ctx context.Context, patch
 	logger := log.FromContext(ctx)
 	original := patchJob.DeepCopy()
 
+	patchPlan, err := r.getPatchPlan(ctx, patchJob)
+	if err != nil {
+		return r.failJob(ctx, original, patchJob, "failed to get PatchPlan", err)
+	}
+
+	// Jobs that entered ValidatingKubernetes before the start time was recorded get a fresh window
+	if patchJob.Status.KubernetesUpgradeStartTime == nil {
+		patchJob.Status.KubernetesUpgradeStartTime = &metav1.Time{Time: time.Now()}
+		if err := r.patchStatus(ctx, original, patchJob); err != nil {
+			logger.Error(err, "failed to update status")
+			return ctrl.Result{}, err
+		}
+		original = patchJob.DeepCopy()
+	}
+
+	timeout := patchPlan.Spec.KubernetesUpgradeTimeout.Duration
+	if timeout <= 0 {
+		timeout = defaultKubernetesUpgradeTimeout
+	}
+	remaining := timeout - time.Since(patchJob.Status.KubernetesUpgradeStartTime.Time)
+	timedOut := remaining <= 0
+	requeueAfter := min(requeueForKubernetesCheck, max(remaining, requeueImmediate))
+
 	var node corev1.Node
 	if err := r.Get(ctx, types.NamespacedName{Name: patchJob.Spec.NodeName}, &node); err != nil {
 		return r.failJob(ctx, original, patchJob, "failed to get node", err)
@@ -542,11 +630,15 @@ func (r *PatchJobReconciler) waitForKubernetesUpgrade(ctx context.Context, patch
 	kubernetesVersion := patchJob.Spec.Target.KubernetesVersion
 
 	if node.Status.NodeInfo.KubeletVersion != kubernetesVersion {
+		if timedOut {
+			return r.failJob(ctx, original, patchJob, "kubelet did not reach target version",
+				fmt.Errorf("running %s, want %s after %s", node.Status.NodeInfo.KubeletVersion, kubernetesVersion, timeout))
+		}
 		logger.Info("waiting for kubelet to report target version",
 			"node", patchJob.Spec.NodeName,
 			"currentKubernetesVersion", node.Status.NodeInfo.KubeletVersion,
 			"targetKubernetesVersion", kubernetesVersion)
-		return ctrl.Result{RequeueAfter: requeueForKubernetesCheck}, nil
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	if nodeutil.IsControlPlane(&node) {
@@ -555,8 +647,12 @@ func (r *PatchJobReconciler) waitForKubernetesUpgrade(ctx context.Context, patch
 			return r.failJob(ctx, original, patchJob, "failed to check control plane static pods", err)
 		}
 		if !ready {
+			if timedOut {
+				return r.failJob(ctx, original, patchJob, "control plane static pods did not roll out",
+					fmt.Errorf("not running and ready with %s images after %s", kubernetesVersion, timeout))
+			}
 			logger.Info("waiting for control plane static pods to roll out", "node", patchJob.Spec.NodeName)
-			return ctrl.Result{RequeueAfter: requeueForKubernetesCheck}, nil
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 	}
 

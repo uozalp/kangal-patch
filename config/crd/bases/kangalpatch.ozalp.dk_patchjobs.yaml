@@ -233,6 +233,12 @@ spec:
               currentTalosVersion:
                 description: CurrentTalosVersion is the Talos version before upgrade
                 type: string
+              kubernetesUpgradeStartTime:
+                description: |-
+                  KubernetesUpgradeStartTime is when the Kubernetes upgrade patch was applied; the plan's
+                  kubernetesUpgradeTimeout counts from here
+                format: date-time
+                type: string
               message:
                 description: Message contains human-readable message about current
                   state
@@ -248,6 +254,16 @@ spec:
                 - ValidatingKubernetes
                 - Completed
                 - Failed
+                type: string
+              preUpgradeBootID:
+                description: |-
+                  PreUpgradeBootID is the node's boot ID when the Talos upgrade was started, used to detect that
+                  the node rebooted
+                type: string
+              rebootStartTime:
+                description: RebootStartTime is when the Talos upgrade was started;
+                  the plan's rebootTimeout counts from here
+                format: date-time
                 type: string
               startTime:
                 description: StartTime is when the patch operation started

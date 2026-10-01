@@ -228,6 +228,14 @@ func (in *PatchJobStatus) DeepCopyInto(out *PatchJobStatus) {
 		in, out := &in.CompletionTime, &out.CompletionTime
 		*out = (*in).DeepCopy()
 	}
+	if in.RebootStartTime != nil {
+		in, out := &in.RebootStartTime, &out.RebootStartTime
+		*out = (*in).DeepCopy()
+	}
+	if in.KubernetesUpgradeStartTime != nil {
+		in, out := &in.KubernetesUpgradeStartTime, &out.KubernetesUpgradeStartTime
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))
@@ -328,6 +336,7 @@ func (in *PatchPlanSpec) DeepCopyInto(out *PatchPlanSpec) {
 	out.DelayBetweenNodes = in.DelayBetweenNodes
 	out.DrainTimeout = in.DrainTimeout
 	out.RebootTimeout = in.RebootTimeout
+	out.KubernetesUpgradeTimeout = in.KubernetesUpgradeTimeout
 	in.TalosConfig.DeepCopyInto(&out.TalosConfig)
 	if in.Maintenance != nil {
 		in, out := &in.Maintenance, &out.Maintenance

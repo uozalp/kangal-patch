@@ -479,6 +479,7 @@ spec:
 | `respectPDBs` | bool | Respect PodDisruptionBudgets | `true` |
 | `drainTimeout` | duration | Max time for node drain | `5m` |
 | `rebootTimeout` | duration | Max time for reboot | `10m` |
+| `kubernetesUpgradeTimeout` | duration | Max time for kubelet/control plane to report the target Kubernetes version | `10m` |
 | `paused` | bool | Pause operation | `false` |
 | `cancelled` | bool | Permanently cancel operation | `false` |
 | `maintenance` | object | Maintenance window configuration | `nil` |
