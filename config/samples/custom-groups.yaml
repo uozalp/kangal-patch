@@ -1,0 +1,54 @@
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: custom-groups
+spec:
+  target:
+    talosVersion: v1.11.6
+    source: ghcr
+
+  # Node selection: the complete population of the plan; groups never add nodes
+  nodeSelector:
+    matchLabels:
+      environment: production
+
+  # Custom groups are label filters over the selected nodes. A node matching several
+  # groups is patched by the first one listed in strategy.order, and only once.
+  groups:
+    database:
+      selector:
+        matchLabels:
+          workload: database
+      concurrency: 1
+    gpu:
+      selector:
+        matchLabels:
+          accelerator: nvidia
+      concurrency: 2
+    workers:            # built in (all non-control-plane nodes); declared only to set concurrency
+      concurrency: 3
+
+  # Groups run strictly in this order; a group starts once every earlier group has finished.
+  # Nodes claimed by no listed group are not patched.
+  strategy:
+    order: [database, gpu, workers, controlPlane]
+
+  delayBetweenNodes: "300s"
+
+  failurePolicy:
+    type: Pause
+    maxFailures: 1
+
+  respectPDBs: true
+  drainTimeout: "10m"
+  rebootTimeout: "10m"
+
+  retention:
+    history: 168h
+
+  talosConfig:
+    endpoints:
+      - 192.168.1.250:50000
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch
