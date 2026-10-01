@@ -64,17 +64,18 @@ runs preflight checks, and rolls the change out group by group.
 ### How it works
 
 ```mermaid
-flowchart LR
-    A[PatchPlan created] --> B[Preflight checks]
-    B -->|pass| C[Resolve nodes into groups]
-    B -->|fail| X[Failed, retried every minute]
-    C --> D[Create PatchJobs for current group]
-    D --> E[Per node:<br/>drain → upgrade → reboot → verify]
-    E --> F{Failures over<br/>threshold?}
-    F -->|no| G[Next group / next round]
-    F -->|yes| H[Halt or Pause]
-    G --> D
-    G --> I[Completed]
+flowchart TD
+    A([PatchPlan created]) --> B{Preflight checks pass?}
+    B -- no --> B1[Failed, retried every minute until it passes]
+    B1 --> B
+    B -- yes --> C[Take next group in strategy.order]
+    C --> D[Create PatchJobs up to group concurrency]
+    D --> E[Per node: drain, upgrade, reboot, verify]
+    E --> F{maxFailures reached?}
+    F -- yes --> G([Halt or Pause per failurePolicy])
+    F -- no --> H{More nodes or groups?}
+    H -- yes --> C
+    H -- no --> I([Completed])
 ```
 
 1. The operator selects the nodes named by `nodeSelector` and assigns each to the first matching
@@ -95,7 +96,7 @@ flowchart LR
 | `Paused` | Paused by `spec.paused` or by the `Pause` failure policy |
 | `Cancelled` | Permanently stopped by `spec.cancelled` |
 | `Completed` | All nodes processed |
-| `Failed` | Preflight failed or the failure threshold was reached |
+| `Failed` | Either preflight failed (not terminal: retried every minute, recovers once fixed) or the `Halt` failure threshold was reached (terminal) |
 | `Watching` | Auto-update template that spawns child plans |
 
 #### PatchJob phases
@@ -401,7 +402,9 @@ condition message.
 
 On failure the plan moves to `Failed`, the `PreflightPassed` condition carries the reason and
 message, and the checks are retried every minute, so fixing the cause (for example a Secret)
-recovers the plan without recreating it. Checks are not repeated once `PatchJobs` exist.
+recovers the plan without recreating it. There is no retry limit: a plan with a permanent
+problem stays `Failed` and keeps retrying until you fix it, cancel it or delete it. Checks are
+not repeated once `PatchJobs` exist.
 
 ```bash
 kubectl get patchplan simple-upgrade -o jsonpath='{.status.conditions}' | jq
@@ -635,17 +638,6 @@ make docker-build IMG=ghcr.io/uozalp/kangal-patch TAG=dev
 make install        # Install CRDs into the current cluster
 make deploy         # Deploy the operator into the current cluster
 ```
-
-### Repository layout
-
-| Path | Contents |
-|------|----------|
-| `api/v1alpha1` | CRD Go types |
-| `cmd/manager` | Operator entry point |
-| `controllers` | PatchPlan and PatchJob reconcilers, scheduling, preflight, auto-update |
-| `internal` | Drain, Talos client, registry, release, scheduling and support-matrix helpers |
-| `config` | CRDs, RBAC, manager manifests and samples |
-| `helm/kangal-patch` | Helm chart |
 
 ## Contributing
 
