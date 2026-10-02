@@ -5,7 +5,8 @@ metadata:
 spec:
   target:
     talosVersion: v1.11.6
-    source: ghcr
+    source: factory
+    installer: nocloud
 
   # Node selection: the complete population of the plan; groups never add nodes
   nodeSelector:

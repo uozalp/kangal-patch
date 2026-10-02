@@ -44,7 +44,7 @@ runs preflight checks, and rolls the change out group by group.
 
 - **Rolling Talos OS upgrades** with per-group concurrency limits
 - **Kubernetes version upgrades** (kubelet, control plane static pods, kube-proxy) without reboots
-- **Node groups and ordering** to roll out databases, GPU nodes, workers and control plane in the order you choose
+- **Rollout groups and ordering** to patch databases, GPU nodes, workers and control plane in the order you choose
 - **Safe draining** with PodDisruptionBudget enforcement
 - **Preflight checks** that block a rollout before any node is touched
 - **Failure budgets** that halt or pause the rollout when a threshold is reached
@@ -60,6 +60,17 @@ runs preflight checks, and rolls the change out group by group.
 |----------|-------|-------------|
 | `PatchPlan` | Cluster | Declares the target versions, node selection, rollout order, safety settings and schedule. This is the only resource you create. |
 | `PatchJob` | Cluster | Created by the operator, one per node. Tracks that node through its upgrade. |
+
+A `PatchPlan` is the rollout definition and its orchestration state. It creates a `PatchJob` for each
+node it schedules, and each `PatchJob` moves that single node through the upgrade state machine.
+
+```
+PatchPlan
+  +-- PatchJob / node-1
+  +-- PatchJob / node-2
+  +-- PatchJob / node-3
+  +-- PatchJob / node-4
+```
 
 ### How it works
 
@@ -94,7 +105,7 @@ flowchart TD
 | `Preflighting` | Running preflight checks |
 | `InProgress` | Nodes are being patched |
 | `Paused` | Paused by `spec.paused` or by the `Pause` failure policy |
-| `Cancelled` | Permanently stopped by `spec.cancelled` |
+| `Cancelled` | Scheduling stopped by `spec.cancelled`. Not requeued; setting `cancelled` back to `false` resumes the plan |
 | `Completed` | All nodes processed |
 | `Failed` | Either preflight failed (not terminal: retried every minute, recovers once fixed) or the `Halt` failure threshold was reached (terminal) |
 | `Watching` | Auto-update template that spawns child plans |
@@ -178,7 +189,8 @@ metadata:
 spec:
   target:
     talosVersion: v1.11.6
-    source: ghcr
+    source: factory
+    installer: nocloud
 
   # Control plane first, then workers (this is the default order)
   strategy:
@@ -215,22 +227,45 @@ spec:
 kubectl apply -f patchplan.yaml
 ```
 
-#### Using Talos Factory images
+#### Talos installer source
 
-With `source: factory` the operator builds the installer image reference from the individual
-`target` fields:
+`target.source` controls how the installer image is resolved.
 
-```
-factory.talos.dev/{installer}-installer[-secureboot]/{schematicID}:{talosVersion}
-```
+| `source` | Installer image | Use for |
+|----------|-----------------|---------|
+| `factory` | `factory.talos.dev/{installer}-installer[-secureboot]/{schematicID}:{talosVersion}` | Recommended. Required for Talos 1.14 and later. Supports schematics and secure boot |
+| `ghcr` (default) | `ghcr.io/siderolabs/installer:{talosVersion}` | Legacy: Talos releases before 1.14 that do not need a custom schematic |
+
+> [!NOTE]
+> Since Talos 1.14.0 the default installer image is served by Image Factory and
+> `ghcr.io/siderolabs/installer` is no longer published with releases. `ghcr` is retained for older
+> Talos versions; for Talos 1.14 and later set `source: factory`. The preflight registry check fails
+> a plan whose installer image does not exist.
+
+With `source: factory`, `installer` is required (`aws`, `azure`, `nocloud`, ...).
+
+**Without `schematicID`: keep each node's schematic.** The operator detects the schematic each node
+is currently running and uses it for that node's installer image, so a version upgrade does not
+lose the node's system extensions or kernel arguments.
 
 ```yaml
 spec:
   target:
     talosVersion: v1.12.1
     source: factory
-    installer: aws                    # aws, azure, nocloud, ...
-    schematicID: 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba  # optional
+    installer: nocloud
+```
+
+**With `schematicID`: set the target schematic.** The given schematic is used for every node. This
+can intentionally change the extensions and customization of the Talos image.
+
+```yaml
+spec:
+  target:
+    talosVersion: v1.12.1
+    source: factory
+    installer: aws
+    schematicID: 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
     secureBoot: true                  # adds the -secureboot suffix
   groups:
     workers:
@@ -242,8 +277,6 @@ spec:
       name: talos-credentials
       namespace: kangal-patch
 ```
-
-If `schematicID` is omitted, each node keeps its currently running schematic.
 
 ### 3. Monitor progress
 
@@ -276,15 +309,16 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":true}}
 kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}}'
 ```
 
-Cancel permanently:
+Cancel:
 
 ```bash
 kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":true}}'
 ```
 
-Unlike pause, a cancelled plan moves to the terminal `Cancelled` phase and the controller stops
-scheduling new nodes. `PatchJobs` already in progress are not interrupted and run to completion.
-Setting `cancelled` back to `false` resumes scheduling.
+A cancelled plan moves to the `Cancelled` phase and the controller stops scheduling new nodes.
+Unlike pause, the plan is not requeued, and `PatchJobs` already in progress are not interrupted and
+run to completion. Cancelling is not enforced as irreversible: setting `cancelled` back to `false`
+resumes scheduling. To stop for good, delete the plan.
 
 ## Operations Guide
 
@@ -319,13 +353,17 @@ spec:
 - Windows may span midnight.
 - Patching pauses outside the windows and on excluded dates.
 
-### Groups, strategy and concurrency
+### Rollout groups, strategy and concurrency
+
+A group is a logical **rollout group**: a named label selector that decides when its nodes are
+patched. It is not a Kubernetes node group or node pool, and exists only inside the `PatchPlan`.
 
 `nodeSelector` defines the complete population of a plan. `groups` are label filters over that
 population and never add nodes; they may overlap. `strategy.order` lists the groups from first to
 last and resolves overlaps: **the first listed group a node matches schedules it, and a node is
-patched at most once per plan**. `workers` (non-control-plane nodes) and `controlPlane` are built in
-and need not be declared.
+patched at most once per plan**. Groups that are not listed in `strategy.order` do not take part in
+the rollout. `workers` (non-control-plane nodes) and `controlPlane` are built in and need not be
+declared.
 
 ```yaml
 spec:
@@ -419,6 +457,15 @@ nodes itself. Every `checkInterval` it creates a child PatchPlan named `<templat
 `target.talosVersion` set and the rest of the spec copied. The child runs the normal flow
 (preflight, `PatchJobs`), so each release has its own PatchPlan and history.
 
+```
+Auto-update PatchPlan (Watching, patches no nodes itself)
+  +-- child PatchPlan <template>-v1.14.1   -> PatchJobs per node
+  +-- child PatchPlan <template>-v1.14.2   -> PatchJobs per node
+```
+
+Because children copy the template's `target`, set `source: factory` on templates that will
+reach Talos 1.14 or later.
+
 ```yaml
 spec:
   target:
@@ -458,7 +505,8 @@ metadata:
 spec:
   target:
     talosVersion: v1.13.10
-    source: ghcr
+    source: factory
+    installer: nocloud
   groups:
     workers: {concurrency: 1}
   talosConfig:
@@ -498,7 +546,7 @@ built-in copy of this table. Talos versions newer than the built-in table are no
 |-------|------|-------------|---------|
 | `target` | object | Target Talos and/or Kubernetes version, see [Target spec](#target-spec) | Required |
 | `nodeSelector` | LabelSelector | Complete population of nodes the plan may patch | all nodes |
-| `groups` | map | Node groups with `selector` (label selector) and `concurrency` (min 1, default 1). `workers` and `controlPlane` are built in | `{}` |
+| `groups` | map | Rollout groups with `selector` (label selector) and `concurrency` (min 1, default 1). `workers` and `controlPlane` are built in | `{}` |
 | `strategy.order` | []string | Group evaluation and rollout order | `[controlPlane, workers]` |
 | `failurePolicy.type` | string | `Halt` or `Pause` | `Halt` |
 | `failurePolicy.maxFailures` | int | Failed nodes the policy reacts to | `1` |
@@ -509,7 +557,7 @@ built-in copy of this table. Talos versions newer than the built-in table are no
 | `rebootTimeout` | duration | Maximum time for a reboot | `10m` |
 | `kubernetesUpgradeTimeout` | duration | Maximum time for the kubelet and control plane to report the target Kubernetes version | `10m` |
 | `paused` | bool | Pause the plan | `false` |
-| `cancelled` | bool | Permanently cancel the plan | `false` |
+| `cancelled` | bool | Stop scheduling new nodes (`Cancelled` phase); setting it back to `false` resumes | `false` |
 | `maintenance` | object | Maintenance window configuration | `nil` |
 | `talosConfig` | object | Talos API endpoints and credentials Secret reference | Required |
 
@@ -522,13 +570,13 @@ because a kubelet must never run newer than the control plane it connects to.
 
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
-| `talosVersion` | string | Talos OS version, e.g. `v1.12.1` | - |
-| `kubernetesVersion` | string | Kubernetes version, e.g. `v1.32.4`. Patches the kubelet, on control plane nodes the kube-apiserver, controller-manager and scheduler static pods, and the cluster-wide kube-proxy DaemonSet. No drain or reboot required | - |
-| `source` | string | Image source: `ghcr` or `factory` | `ghcr` |
+| `talosVersion` | string | Upgrades Talos OS, e.g. `v1.12.1`. Omit to leave Talos untouched | - |
+| `kubernetesVersion` | string | Upgrades Kubernetes components, e.g. `v1.32.4`; can be combined with `talosVersion`. Patches the kubelet, on control plane nodes the kube-apiserver, controller-manager and scheduler static pods, and the cluster-wide kube-proxy DaemonSet. No drain or reboot required | - |
+| `source` | string | How the Talos installer image is resolved: `factory` (recommended; required from Talos 1.14) or `ghcr` (legacy, Talos < 1.14). See [Talos installer source](#talos-installer-source) | `ghcr` |
 | `installer` | string | Installer type, e.g. `aws`, `nocloud`. Required when `source=factory` | - |
-| `schematicID` | string | Talos Factory schematic ID. If omitted with `source=factory`, each node's running schematic is used | - |
-| `secureBoot` | bool | Use the secure boot installer. Only with `source=factory` | `false` |
-| `autoUpdate.enabled` | bool | Make the plan an auto-update template, see [Auto-update](#auto-update) | - |
+| `schematicID` | string | Talos Factory schematic ID. If omitted with `source=factory`, each node's running schematic is kept; if set, it becomes the target schematic | - |
+| `secureBoot` | bool | Use the secure boot installer. Only applies with `source=factory` | `false` |
+| `autoUpdate.enabled` | bool | Make the plan a `Watching` template that creates child plans instead of patching nodes, see [Auto-update](#auto-update) | - |
 | `autoUpdate.allow` | string | Largest automatic change: `patch` or `minor` | `patch` |
 | `autoUpdate.checkInterval` | duration | How often to check for releases (minimum 1m) | `1h` |
 | `autoUpdate.minReleaseAge` | duration | Minimum age of a release before it is used | `0s` |
@@ -565,7 +613,7 @@ Ready-to-apply manifests are in [config/samples](config/samples):
 |--------|---------|
 | [simple-upgrade.yaml](config/samples/simple-upgrade.yaml) | Control plane first, then workers |
 | [controlplane-only.yaml](config/samples/controlplane-only.yaml) | Patch only the control plane |
-| [custom-groups.yaml](config/samples/custom-groups.yaml) | Custom node groups with a defined rollout order |
+| [custom-groups.yaml](config/samples/custom-groups.yaml) | Custom rollout groups with a defined order |
 | [maintenance-window.yaml](config/samples/maintenance-window.yaml) | Restrict patching to maintenance windows |
 | [auto-update.yaml](config/samples/auto-update.yaml) | Follow upstream Talos releases |
 | [talos-secret-example.yaml](config/samples/talos-secret-example.yaml) | Talos credentials Secret |
