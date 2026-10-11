@@ -74,21 +74,6 @@ PatchPlan
 
 ### How it works
 
-```mermaid
-flowchart TD
-    A([PatchPlan created]) --> B{Preflight checks pass?}
-    B -- no --> B1[Failed, retried every minute until it passes]
-    B1 --> B
-    B -- yes --> C[Take next group in strategy.order]
-    C --> D[Create PatchJobs up to group concurrency]
-    D --> E[Per node: drain, upgrade, reboot, verify]
-    E --> F{maxFailures reached?}
-    F -- yes --> G([Halt or Pause per failurePolicy])
-    F -- no --> H{More nodes or groups?}
-    H -- yes --> C
-    H -- no --> I([Completed])
-```
-
 1. The operator selects the nodes named by `nodeSelector` and assigns each to the first matching
    group in `strategy.order`.
 2. Preflight checks run once. Nothing is scheduled until they all pass.
