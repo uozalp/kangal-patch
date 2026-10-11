@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	machineapi "github.com/siderolabs/talos/pkg/machinery/api/machine"
@@ -13,16 +15,33 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	configres "github.com/siderolabs/talos/pkg/machinery/resources/config"
 	runtimeres "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
-	kangalpatchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 )
+
+// callTimeout bounds every Talos API call so a hung node cannot block a reconcile worker.
+const callTimeout = 30 * time.Second
 
 // Client wraps Talos API client operations
 type Client struct {
 	client *client.Client
 }
 
+// nodeCtx targets a single node directly (unlike deprecated WithNodes, which proxies via apid)
+// and applies callTimeout.
+func nodeCtx(ctx context.Context, nodeName string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	return client.WithNode(ctx, nodeName), cancel
+}
+
+// Config holds Talos API connection details; the certificates are PEM, raw or base64-encoded.
+type Config struct {
+	Endpoints  []string
+	CACert     string
+	ClientCert string
+	ClientKey  string
+}
+
 // NewClient creates a new Talos client
-func NewClient(config *kangalpatchv1alpha1.TalosConfig) (*Client, error) {
+func NewClient(config *Config) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
@@ -55,7 +74,8 @@ func (c *Client) GetVersion(ctx context.Context, nodeName string) (string, error
 		return "", fmt.Errorf("client not initialized")
 	}
 
-	ctx = client.WithNode(ctx, nodeName)
+	ctx, cancel := nodeCtx(ctx, nodeName)
+	defer cancel()
 
 	resp, err := c.client.Version(ctx)
 	if err != nil {
@@ -78,6 +98,9 @@ func (c *Client) CheckConnection(ctx context.Context) error {
 		return fmt.Errorf("client not initialized")
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
 	if _, err := c.client.Version(ctx); err != nil {
 		return fmt.Errorf("failed to query Talos endpoint: %w", err)
 	}
@@ -92,7 +115,8 @@ func (c *Client) GetSchematicID(ctx context.Context, nodeName string) (string, e
 		return "", fmt.Errorf("client not initialized")
 	}
 
-	ctx = client.WithNode(ctx, nodeName)
+	ctx, cancel := nodeCtx(ctx, nodeName)
+	defer cancel()
 
 	items, err := c.client.COSI.List(ctx, resource.NewMetadata(runtimeres.NamespaceName, runtimeres.ExtensionStatusType, "", resource.VersionUndefined))
 	if err != nil {
@@ -119,8 +143,8 @@ func (c *Client) Upgrade(ctx context.Context, nodeName, image string) error {
 		return fmt.Errorf("client not initialized")
 	}
 
-	// WithNode targets a single node directly, unlike deprecated WithNodes which proxies via apid
-	ctx = client.WithNode(ctx, nodeName)
+	ctx, cancel := nodeCtx(ctx, nodeName)
+	defer cancel()
 
 	// TODO: migrate to LifecycleClient's streaming Upgrade RPC once adopted across the codebase
 	//nolint:staticcheck // SA1019: UpgradeWithOptions deprecated in favor of LifecycleClient
@@ -169,7 +193,8 @@ func (c *Client) patchMachineConfig(ctx context.Context, nodeName, jsonPatch str
 		return fmt.Errorf("client not initialized")
 	}
 
-	ctx = client.WithNode(ctx, nodeName)
+	ctx, cancel := nodeCtx(ctx, nodeName)
+	defer cancel()
 
 	res, err := c.client.COSI.Get(ctx, resource.NewMetadata(configres.NamespaceName, configres.MachineConfigType, configres.ActiveID, resource.VersionUndefined))
 	if err != nil {
@@ -211,23 +236,6 @@ func (c *Client) patchMachineConfig(ctx context.Context, nodeName, jsonPatch str
 	return nil
 }
 
-// IsResponsive checks if a node is responsive via Talos API
-func (c *Client) IsResponsive(ctx context.Context, nodeName string) (bool, error) {
-	if c.client == nil {
-		return false, fmt.Errorf("client not initialized")
-	}
-
-	// WithNode targets a single node directly, unlike deprecated WithNodes which proxies via apid
-	ctx = client.WithNode(ctx, nodeName)
-
-	_, err := c.client.Version(ctx)
-	if err != nil {
-		return false, nil // Node not responsive, not an error condition
-	}
-
-	return true, nil
-}
-
 // Close closes the Talos client connection
 func (c *Client) Close() error {
 	if c.client != nil {
@@ -236,9 +244,17 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// decodePEM accepts raw PEM (kubectl --from-file) or base64-encoded PEM.
+func decodePEM(s string) ([]byte, error) {
+	if strings.HasPrefix(strings.TrimSpace(s), "-----BEGIN") {
+		return []byte(s), nil
+	}
+	return base64.StdEncoding.DecodeString(s)
+}
+
 // createTLSConfig creates a TLS configuration from the Talos config
-func createTLSConfig(config *kangalpatchv1alpha1.TalosConfig) (*tls.Config, error) {
-	caCertData, err := base64.StdEncoding.DecodeString(config.CACert)
+func createTLSConfig(config *Config) (*tls.Config, error) {
+	caCertData, err := decodePEM(config.CACert)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode CA cert from base64: %w", err)
 	}
@@ -248,12 +264,12 @@ func createTLSConfig(config *kangalpatchv1alpha1.TalosConfig) (*tls.Config, erro
 		return nil, fmt.Errorf("failed to append CA cert to pool")
 	}
 
-	clientCertData, err := base64.StdEncoding.DecodeString(config.ClientCert)
+	clientCertData, err := decodePEM(config.ClientCert)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode client cert from base64: %w", err)
 	}
 
-	clientKeyData, err := base64.StdEncoding.DecodeString(config.ClientKey)
+	clientKeyData, err := decodePEM(config.ClientKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode client key from base64: %w", err)
 	}

@@ -16,9 +16,9 @@ import (
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
+	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/release"
 	"github.com/uozalp/kangal-patch/internal/scheduling"
-	"github.com/uozalp/kangal-patch/internal/talos"
 )
 
 const (
@@ -156,20 +156,11 @@ func (r *PatchPlanReconciler) checkForRelease(ctx context.Context, patchPlan *pa
 
 // lowestTalosVersion returns the lowest version reported by the Talos API across nodes.
 func (r *PatchPlanReconciler) lowestTalosVersion(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, nodes []corev1.Node) (release.Version, error) {
-	talosConfig, err := resolveTalosConfig(ctx, r.Client, patchPlan)
+	talosClient, closeTalos, err := openTalos(ctx, r.Client, r.Namespace, patchPlan)
 	if err != nil {
 		return release.Version{}, err
 	}
-
-	talosClient, err := talos.NewClient(talosConfig)
-	if err != nil {
-		return release.Version{}, fmt.Errorf("failed to create Talos client: %w", err)
-	}
-	defer func() {
-		if cerr := talosClient.Close(); cerr != nil {
-			log.FromContext(ctx).Error(cerr, "failed to close Talos client")
-		}
-	}()
+	defer closeTalos()
 
 	var lowest release.Version
 	for i := range nodes {
@@ -233,7 +224,7 @@ func (r *PatchPlanReconciler) updateTemplateStatus(ctx context.Context, patchPla
 	if equality.Semantic.DeepEqual(original.Status, patchPlan.Status) {
 		return nil
 	}
-	return r.patchStatus(ctx, original, patchPlan)
+	return patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
 }
 
 func phaseOrPending(phase patchv1alpha1.PatchPhase) patchv1alpha1.PatchPhase {

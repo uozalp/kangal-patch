@@ -80,6 +80,7 @@ spec:
               drainTimeout:
                 default: 5m
                 description: DrainTimeout is the maximum time to wait for node drain
+                pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
                 type: string
               failurePolicy:
                 default: {}
@@ -174,6 +175,7 @@ spec:
                 description: |-
                   KubernetesUpgradeTimeout is the maximum time to wait for the kubelet and control plane static
                   pods to report the target Kubernetes version
+                pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
                 type: string
               maintenance:
                 description: Maintenance defines maintenance windows for patching
@@ -183,6 +185,7 @@ spec:
                     description: ExcludeDates is a list of dates in YYYY-MM-DD format
                       (e.g., "2026-12-24") when patching is not allowed
                     items:
+                      pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
                       type: string
                     type: array
                   windows:
@@ -274,6 +277,7 @@ spec:
                 default: 10m
                 description: RebootTimeout is the maximum time to wait for node to
                   reboot and become ready
+                pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
                 type: string
               respectPDBs:
                 default: true
@@ -316,25 +320,14 @@ spec:
               talosConfig:
                 description: TalosConfig contains Talos API connection information
                 properties:
-                  caCert:
-                    description: CACert is the CA certificate for Talos API (base64
-                      encoded)
-                    type: string
-                  clientCert:
-                    description: ClientCert is the client certificate for Talos API
-                      (base64 encoded)
-                    type: string
-                  clientKey:
-                    description: ClientKey is the client key for Talos API (base64
-                      encoded)
-                    type: string
                   endpoints:
                     description: Endpoints is a list of Talos API endpoints
                     items:
                       type: string
                     type: array
                   secretRef:
-                    description: SecretRef references a Secret containing Talos credentials
+                    description: SecretRef references a Secret with raw or base64-encoded
+                      PEM keys ca.crt, tls.crt and tls.key
                     properties:
                       name:
                         description: Name is the name of the secret
@@ -345,6 +338,8 @@ spec:
                     required:
                     - name
                     type: object
+                required:
+                - secretRef
                 type: object
               target:
                 description: Target defines the target Talos and/or Kubernetes version
@@ -396,6 +391,7 @@ spec:
                       Kubernetes version untouched and only upgrade TalosVersion.
                       Preflight requires strategy.order to schedule every control plane node before any worker
                       node, since kubelets must never run newer than the control plane they connect to.
+                    pattern: ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$
                     type: string
                   schematicID:
                     description: |-
@@ -420,8 +416,18 @@ spec:
                     description: |-
                       TalosVersion is the desired Talos OS version (e.g., v1.12.1). Omit to leave the Talos
                       version untouched and only upgrade KubernetesVersion.
+                    pattern: ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: target.talosVersion is immutable; create a new PatchPlan
+                    for a new version
+                  rule: 'has(self.talosVersion) ? (has(oldSelf.talosVersion) && self.talosVersion
+                    == oldSelf.talosVersion) : !has(oldSelf.talosVersion)'
+                - message: target.kubernetesVersion is immutable; create a new PatchPlan
+                    for a new version
+                  rule: 'has(self.kubernetesVersion) ? (has(oldSelf.kubernetesVersion)
+                    && self.kubernetesVersion == oldSelf.kubernetesVersion) : !has(oldSelf.kubernetesVersion)'
             required:
             - target
             type: object

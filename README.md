@@ -136,6 +136,9 @@ helm install kangal-patch oci://ghcr.io/uozalp/helm/kangal-patch \
 Chart settings (replicas, resources, leader election, RBAC) are documented in
 [helm/kangal-patch/values.yaml](helm/kangal-patch/values.yaml). Two replicas with leader election are the default.
 
+The chart installs the CRDs from its `crds/` directory on first install. Helm never upgrades or deletes them, so on
+chart upgrades apply the CRDs from the GitHub Release (or `kubectl apply -k config/crd`) first.
+
 ### Install with kubectl
 
 ```bash
@@ -158,8 +161,8 @@ kubectl get crd patchplans.kangalpatch.ozalp.dk patchjobs.kangalpatch.ozalp.dk
 ### 1. Create the Talos credentials Secret
 
 The operator reads the Talos API credentials from a Secret in the operator namespace. Each key
-holds the **base64-encoded PEM** value, which is the same encoding used in a `talosconfig` file, so
-the values can be copied from it directly.
+holds the PEM value, either raw (as stored by `kubectl create secret generic --from-file`) or
+**base64-encoded** (the encoding used in a `talosconfig` file, so the values can be copied from it).
 
 ```bash
 CA_CERT=$(base64 -w0 < /path/to/ca.crt)

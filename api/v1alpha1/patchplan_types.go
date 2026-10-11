@@ -62,6 +62,9 @@ type AutoUpdateStatus struct {
 
 // TargetSpec defines the target Talos and/or Kubernetes version specification.
 // At least one of TalosVersion, KubernetesVersion or an enabled AutoUpdate must be set.
+// TalosVersion and KubernetesVersion are immutable once set; roll out a new version with a new PatchPlan.
+// +kubebuilder:validation:XValidation:rule="has(self.talosVersion) ? (has(oldSelf.talosVersion) && self.talosVersion == oldSelf.talosVersion) : !has(oldSelf.talosVersion)",message="target.talosVersion is immutable; create a new PatchPlan for a new version"
+// +kubebuilder:validation:XValidation:rule="has(self.kubernetesVersion) ? (has(oldSelf.kubernetesVersion) && self.kubernetesVersion == oldSelf.kubernetesVersion) : !has(oldSelf.kubernetesVersion)",message="target.kubernetesVersion is immutable; create a new PatchPlan for a new version"
 type TargetSpec struct {
 	// AutoUpdate makes this PatchPlan a template that creates a child PatchPlan per Talos release.
 	// TalosVersion and KubernetesVersion must be omitted when it is enabled.
@@ -70,6 +73,7 @@ type TargetSpec struct {
 
 	// TalosVersion is the desired Talos OS version (e.g., v1.12.1). Omit to leave the Talos
 	// version untouched and only upgrade KubernetesVersion.
+	// +kubebuilder:validation:Pattern=`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`
 	// +optional
 	TalosVersion string `json:"talosVersion,omitempty"`
 
@@ -77,6 +81,7 @@ type TargetSpec struct {
 	// Kubernetes version untouched and only upgrade TalosVersion.
 	// Preflight requires strategy.order to schedule every control plane node before any worker
 	// node, since kubelets must never run newer than the control plane they connect to.
+	// +kubebuilder:validation:Pattern=`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`
 	// +optional
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 
@@ -147,15 +152,21 @@ type PatchPlanSpec struct {
 
 	// DrainTimeout is the maximum time to wait for node drain
 	// +kubebuilder:default="5m"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
 	DrainTimeout metav1.Duration `json:"drainTimeout,omitempty"`
 
 	// RebootTimeout is the maximum time to wait for node to reboot and become ready
 	// +kubebuilder:default="10m"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
 	RebootTimeout metav1.Duration `json:"rebootTimeout,omitempty"`
 
 	// KubernetesUpgradeTimeout is the maximum time to wait for the kubelet and control plane static
 	// pods to report the target Kubernetes version
 	// +kubebuilder:default="10m"
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
 	KubernetesUpgradeTimeout metav1.Duration `json:"kubernetesUpgradeTimeout,omitempty"`
 
 	// Paused pauses the patching operation
@@ -263,6 +274,7 @@ func (p *PatchPlan) HistoryRetention() time.Duration {
 // MaintenanceSpec defines maintenance windows for patching operations
 type MaintenanceSpec struct {
 	// ExcludeDates is a list of dates in YYYY-MM-DD format (e.g., "2026-12-24") when patching is not allowed
+	// +kubebuilder:validation:items:Pattern="^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 	// +optional
 	ExcludeDates []string `json:"excludeDates,omitempty"`
 
@@ -298,21 +310,8 @@ type TalosConfig struct {
 	// +optional
 	Endpoints []string `json:"endpoints,omitempty"`
 
-	// CACert is the CA certificate for Talos API (base64 encoded)
-	// +optional
-	CACert string `json:"caCert,omitempty"`
-
-	// ClientCert is the client certificate for Talos API (base64 encoded)
-	// +optional
-	ClientCert string `json:"clientCert,omitempty"`
-
-	// ClientKey is the client key for Talos API (base64 encoded)
-	// +optional
-	ClientKey string `json:"clientKey,omitempty"`
-
-	// SecretRef references a Secret containing Talos credentials
-	// +optional
-	SecretRef *SecretReference `json:"secretRef,omitempty"`
+	// SecretRef references a Secret with raw or base64-encoded PEM keys ca.crt, tls.crt and tls.key
+	SecretRef *SecretReference `json:"secretRef"`
 }
 
 // SecretReference contains a reference to a Secret
@@ -459,7 +458,6 @@ const (
 	LabelPatchPlan = "kangalpatch.ozalp.dk/patchplan"
 	LabelGroup     = "kangalpatch.ozalp.dk/group"
 	LabelNode      = "kangalpatch.ozalp.dk/node"
-	LabelPatchJob  = "kangalpatch.ozalp.dk/patchjob"
 )
 
 // IsAutoUpdateTemplate reports whether the plan only watches for releases and creates child plans.

@@ -228,6 +228,10 @@ func (in *PatchJobStatus) DeepCopyInto(out *PatchJobStatus) {
 		in, out := &in.CompletionTime, &out.CompletionTime
 		*out = (*in).DeepCopy()
 	}
+	if in.DrainStartTime != nil {
+		in, out := &in.DrainStartTime, &out.DrainStartTime
+		*out = (*in).DeepCopy()
+	}
 	if in.RebootStartTime != nil {
 		in, out := &in.RebootStartTime, &out.RebootStartTime
 		*out = (*in).DeepCopy()
@@ -235,13 +239,6 @@ func (in *PatchJobStatus) DeepCopyInto(out *PatchJobStatus) {
 	if in.KubernetesUpgradeStartTime != nil {
 		in, out := &in.KubernetesUpgradeStartTime, &out.KubernetesUpgradeStartTime
 		*out = (*in).DeepCopy()
-	}
-	if in.Conditions != nil {
-		in, out := &in.Conditions, &out.Conditions
-		*out = make([]v1.Condition, len(*in))
-		for i := range *in {
-			(*in)[i].DeepCopyInto(&(*out)[i])
-		}
 	}
 }
 

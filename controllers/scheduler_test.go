@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,7 +27,7 @@ const (
 func testScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, coordinationv1.AddToScheme, patchv1alpha1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, corev1.AddToScheme, coordinationv1.AddToScheme, patchv1alpha1.AddToScheme} {
 		if err := add(s); err != nil {
 			t.Fatal(err)
 		}
@@ -185,6 +186,20 @@ func TestScheduleNodesWaitsForDelayBetweenNodes(t *testing.T) {
 	}
 }
 
+func TestDelayRemainingCountsFromJobCompletion(t *testing.T) {
+	plan := testPlan(patchv1alpha1.PatchPlanSpec{DelayBetweenNodes: metav1.Duration{Duration: time.Hour}})
+	plan.Status.LastNodeScheduledAt = &metav1.Time{Time: time.Now().Add(-2 * time.Hour)}
+	if got := delayRemaining(plan, nil); got > 0 {
+		t.Fatalf("delay measured from creation = %v, want none left", got)
+	}
+
+	job := jobFor("w-1", "workers", patchv1alpha1.PatchJobPhaseCompleted)
+	job.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	if got := delayRemaining(plan, jobsByNode(job)); got < 50*time.Minute {
+		t.Fatalf("delay after completion = %v, want about an hour", got)
+	}
+}
+
 func TestScheduleNodesWaitsForControlPlaneBeforeKubernetesUpgradeOnWorkers(t *testing.T) {
 	spec := patchv1alpha1.PatchPlanSpec{
 		Target: patchv1alpha1.TargetSpec{KubernetesVersion: "v1.35.0"},
@@ -219,7 +234,7 @@ func TestSyncLeasesReleasesFinishedJobsAndRestoresMissingOnes(t *testing.T) {
 	staleLease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{
 		Name: done.Name, Namespace: testNamespace,
 		Labels: map[string]string{
-			patchv1alpha1.LabelPatchPlan: "plan", patchv1alpha1.LabelGroup: "workers", patchv1alpha1.LabelPatchJob: done.Name,
+			patchv1alpha1.LabelPatchPlan: "plan", patchv1alpha1.LabelGroup: "workers",
 		},
 	}}
 	r := testReconciler(t, plan, done, running, staleLease)
@@ -409,6 +424,24 @@ func TestCheckUpgradeOrder(t *testing.T) {
 	}
 }
 
+func TestCheckKubeletSkew(t *testing.T) {
+	tests := []struct {
+		target, server string
+		wantFail       bool
+	}{
+		{"v1.35.0", "v1.34.2", true},
+		{"v1.34.5", "v1.34.2", false},
+		{"v1.33.0", "v1.34.2+k3s1", false},
+	}
+	for _, tt := range tests {
+		res := &preflightResult{}
+		checkKubeletSkew(tt.target, tt.server, res)
+		if failed := len(res.failures) > 0; failed != tt.wantFail {
+			t.Errorf("target %s server %s: failed=%t, want %t", tt.target, tt.server, failed, tt.wantFail)
+		}
+	}
+}
+
 func TestCheckVersionCompatibilityIsAMatrix(t *testing.T) {
 	probes := []nodeProbe{{node: "n1", version: "v1.12.0", kubernetesVersion: "v1.32.0"}}
 
@@ -430,5 +463,19 @@ func TestCheckVersionCompatibilityIsAMatrix(t *testing.T) {
 				t.Errorf("failed=%t (%+v), want %t", failed, res.failures, tt.wantFail)
 			}
 		})
+	}
+}
+
+func TestBlocksPlanOrdersPendingByAge(t *testing.T) {
+	now := metav1.Now()
+	older := &patchv1alpha1.PatchPlan{ObjectMeta: metav1.ObjectMeta{Name: "b", CreationTimestamp: metav1.NewTime(now.Add(-time.Minute))}}
+	newer := &patchv1alpha1.PatchPlan{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: now}}
+	if !blocksPlan(older, newer) || blocksPlan(newer, older) {
+		t.Fatal("older pending plan must block the newer one only")
+	}
+	tieA := &patchv1alpha1.PatchPlan{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: now}}
+	tieB := &patchv1alpha1.PatchPlan{ObjectMeta: metav1.ObjectMeta{Name: "b", CreationTimestamp: now}}
+	if !blocksPlan(tieA, tieB) || blocksPlan(tieB, tieA) {
+		t.Fatal("equal timestamps must fall back to name order")
 	}
 }

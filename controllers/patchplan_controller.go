@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
@@ -56,10 +57,10 @@ const (
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchplans/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",namespace=kangal-patch,resources=secrets,verbs=get
+// +kubebuilder:rbac:groups=coordination.k8s.io,namespace=kangal-patch,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,resourceNames=kube-proxy,verbs=get;update;patch
 
 // kubeProxyDaemonSetName/kubeProxyNamespace identify the cluster-wide kube-proxy DaemonSet that
 // is upgraded once, after all control plane nodes have completed their Kubernetes upgrade.
@@ -131,7 +132,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	patchPlan.Status.TargetKubernetesVersion = patchPlan.Spec.Target.KubernetesVersion
 
 	if !equality.Semantic.DeepEqual(original.Status, patchPlan.Status) {
-		if err := r.patchStatus(ctx, original, &patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, &patchPlan); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -163,21 +164,28 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: requeueWhenPreflightFailed}, nil
 	}
 
+	// Must precede the completion check: a control-plane-only plan finishes with its last job
+	if wait, err := r.ensureKubeProxy(ctx, &patchPlan, rollout, jobsByNode); err != nil {
+		return ctrl.Result{}, err
+	} else if wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+
+	// Must precede the completion check: a failed last node must not turn the plan Completed
+	failureBudgetExceeded, err := r.failureBudgetExceeded(ctx, &patchPlan, jobSummary.Failed)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if failureBudgetExceeded {
+		return terminalResult(&patchPlan), nil
+	}
+
 	// Check if all nodes are processed
 	allProcessed, err := r.allNodesProcessed(ctx, &patchPlan, jobSummary, rollout.Total())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if allProcessed {
-		return terminalResult(&patchPlan), nil
-	}
-
-	// Check the failure policy
-	failureBudgetExceeded, err := r.failureBudgetExceeded(ctx, &patchPlan, jobSummary.Failed)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if failureBudgetExceeded {
 		return terminalResult(&patchPlan), nil
 	}
 
@@ -191,7 +199,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			logger.Info("unable to determine next maintenance window", "error", err.Error())
 			return ctrl.Result{RequeueAfter: 15 * time.Minute}, nil
 		}
-		requeueDuration := time.Until(nextWindow)
+		requeueDuration := max(time.Until(nextWindow), time.Second) // <= 0 would mean no requeue at all
 		logger.Info("scheduling for next maintenance window", "nextWindow", nextWindow, "requeue", requeueDuration)
 		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
@@ -216,6 +224,7 @@ func (r *PatchPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&patchv1alpha1.PatchPlan{}).
 		Owns(&patchv1alpha1.PatchPlan{}). // child plans wake their auto-update template
 		Owns(&patchv1alpha1.PatchJob{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }
 
@@ -248,7 +257,7 @@ func (r *PatchPlanReconciler) failureBudgetExceeded(ctx context.Context, patchPl
 		patchPlan.Status.Message = fmt.Sprintf("failure policy Halt: %d failed node(s), maxFailures %d", failedCount, policy.MaxFailures)
 		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
 
-		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 			return true, err
 		}
 	}
@@ -271,7 +280,7 @@ func (r *PatchPlanReconciler) pauseOnFailures(ctx context.Context, patchPlan *pa
 	original := patchPlan.DeepCopy()
 	patchPlan.Status.Phase = patchv1alpha1.PatchPhasePaused
 	patchPlan.Status.Message = fmt.Sprintf("Paused by failure policy: %d failed node(s). Inspect or delete the failed PatchJobs, then set spec.paused=false to resume", failedCount)
-	return r.patchStatus(ctx, original, patchPlan)
+	return patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
 }
 
 // allNodesCompleted returns true if every node has a Completed PatchJob in jobsByNode.
@@ -314,7 +323,8 @@ func (r *PatchPlanReconciler) ensureKubeProxyUpgraded(ctx context.Context, kuber
 		return false, nil
 	}
 
-	rolledOut := ds.Status.UpdatedNumberScheduled == ds.Status.DesiredNumberScheduled &&
+	rolledOut := ds.Status.ObservedGeneration >= ds.Generation &&
+		ds.Status.UpdatedNumberScheduled == ds.Status.DesiredNumberScheduled &&
 		ds.Status.NumberReady == ds.Status.DesiredNumberScheduled
 	return rolledOut, nil
 }
@@ -335,7 +345,7 @@ func (r *PatchPlanReconciler) ensureCancelledState(ctx context.Context, patchPla
 		patchPlan.Status.Message = "Patching cancelled by user"
 		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
 
-		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 			logger.Error(err, "unable to update PatchPlan status to cancelled")
 			return true, err
 		}
@@ -357,7 +367,7 @@ func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *p
 			patchPlan.Status.Phase = patchv1alpha1.PatchPhasePaused
 			patchPlan.Status.Message = "Patching paused by user"
 
-			if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+			if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 				logger.Error(err, "unable to update PatchPlan status to paused")
 				return true, err
 			}
@@ -377,18 +387,13 @@ func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *p
 			patchPlan.Status.FailuresAcknowledged = failedCount
 		}
 
-		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 			logger.Error(err, "unable to update PatchPlan status")
 			return false, err
 		}
 	}
 
 	return false, nil
-}
-
-// patchStatus applies a status patch to the PatchPlan, only updating changed fields.
-func (r *PatchPlanReconciler) patchStatus(ctx context.Context, original, modified *patchv1alpha1.PatchPlan) error {
-	return patchutil.PatchStatus(ctx, r.Status(), original, modified)
 }
 
 // listPatchJobs returns all PatchJobs belonging to a PatchPlan.
@@ -459,7 +464,7 @@ func (r *PatchPlanReconciler) allNodesProcessed(ctx context.Context, patchPlan *
 		patchPlan.Status.Message = "all nodes processed"
 		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
 
-		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 			logger.Error(err, "unable to update PatchPlan status to completed")
 			return true, err
 		}

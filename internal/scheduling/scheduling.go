@@ -204,6 +204,29 @@ func (r *Rollout) ControlPlaneNodes() []corev1.Node {
 	return nodes
 }
 
+// CheckControlPlaneQuorum verifies that no group takes down ceil(n/2) or more of the n control plane
+// nodes at once, which would break etcd quorum. Concurrency 1 is always allowed: it is the minimum,
+// and clusters with fewer than 3 control plane nodes have no quorum to protect anyway.
+func (r *Rollout) CheckControlPlaneQuorum() error {
+	n := len(r.ControlPlaneNodes())
+	limit := (n + 1) / 2
+	for i := range r.Groups {
+		g := &r.Groups[i]
+		cp := 0
+		for j := range g.Nodes {
+			if nodeutil.IsControlPlane(&g.Nodes[j]) {
+				cp++
+			}
+		}
+		at := min(g.Concurrency, cp)
+		if at > 1 && at >= limit {
+			return fmt.Errorf("group %q upgrades %d of %d control plane nodes at once, which can break etcd quorum; use concurrency below %d",
+				g.Name, at, n, limit)
+		}
+	}
+	return nil
+}
+
 // GroupOf returns the name of the group scheduling nodeName.
 func (r *Rollout) GroupOf(nodeName string) (string, bool) {
 	for i := range r.Groups {

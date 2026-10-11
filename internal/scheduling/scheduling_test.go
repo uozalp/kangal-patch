@@ -1,6 +1,7 @@
 package scheduling
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -194,6 +195,36 @@ func TestResolveSchedulesControlPlaneNodesFirstWithinGroup(t *testing.T) {
 	}
 	if !slices.Equal(names(got.Groups[0].Nodes), []string{"z-cp", "a-worker"}) {
 		t.Errorf("nodes = %v", names(got.Groups[0].Nodes))
+	}
+}
+
+func TestCheckControlPlaneQuorum(t *testing.T) {
+	cpNodes := func(n int) []corev1.Node {
+		out := make([]corev1.Node, n)
+		for i := range out {
+			out[i] = node(fmt.Sprintf("cp-%d", i), cp, "")
+		}
+		return out
+	}
+	tests := []struct {
+		nodes       int
+		concurrency int
+		wantErr     bool
+	}{
+		{1, 1, false},
+		{3, 1, false},
+		{3, 2, true},
+		{3, 5, true},
+		{5, 2, false},
+		{5, 3, true},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%dcp-c%d", tt.nodes, tt.concurrency), func(t *testing.T) {
+			rollout := &Rollout{Groups: []Group{{Name: "controlPlane", Concurrency: tt.concurrency, Nodes: cpNodes(tt.nodes)}}}
+			if err := rollout.CheckControlPlaneQuorum(); (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
@@ -26,16 +27,19 @@ import (
 
 // Reasons set on the PreflightPassed condition.
 const (
-	reasonPreflightPassed         = "PreflightPassed"
-	reasonNoNodesSelected         = "NoNodesSelected"
-	reasonPlanConflict            = "PlanConflict"
-	reasonKubernetesAPIUnhealthy  = "KubernetesAPIUnhealthy"
-	reasonTalosCredentialsInvalid = "TalosCredentialsInvalid"
-	reasonNodeUnreachable         = "NodeUnreachable"
-	reasonInvalidTarget           = "InvalidTarget"
-	reasonTalosImageUnavailable   = "TalosImageUnavailable"
-	reasonUnsupportedVersionCombo = "UnsupportedVersionCombination"
-	reasonControlPlaneOrder       = "ControlPlaneOrderRequired"
+	reasonPreflightPassed            = "PreflightPassed"
+	reasonNoNodesSelected            = "NoNodesSelected"
+	reasonPlanConflict               = "PlanConflict"
+	reasonKubernetesAPIUnhealthy     = "KubernetesAPIUnhealthy"
+	reasonTalosCredentialsInvalid    = "TalosCredentialsInvalid"
+	reasonNodeUnreachable            = "NodeUnreachable"
+	reasonInvalidTarget              = "InvalidTarget"
+	reasonTalosImageUnavailable      = "TalosImageUnavailable"
+	reasonKubernetesImageUnavailable = "KubernetesImageUnavailable"
+	reasonUnsupportedVersionCombo    = "UnsupportedVersionCombination"
+	reasonControlPlaneOrder          = "ControlPlaneOrderRequired"
+	reasonControlPlaneQuorum         = "ControlPlaneQuorumRisk"
+	reasonKubeletNewerThanAPIServer  = "KubeletNewerThanAPIServer"
 )
 
 const (
@@ -92,7 +96,7 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 		original := patchPlan.DeepCopy()
 		patchPlan.Status.Phase = patchv1alpha1.PatchPhasePreflighting
 		patchPlan.Status.Message = "Running preflight checks"
-		if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 			return false, err
 		}
 	}
@@ -123,7 +127,7 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 		patchPlan.Status.Message = "Preflight failed: " + summary
 
 		logger.Info("preflight failed", "failures", messages, "passed", res.passed)
-		return false, r.patchStatus(ctx, original, patchPlan)
+		return false, patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
 	}
 
 	summary := strings.Join(res.passed, "; ")
@@ -139,7 +143,7 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 	patchPlan.Status.Message = "Preflight passed: " + summary
 
 	logger.Info("preflight passed", "checks", res.passed)
-	return true, r.patchStatus(ctx, original, patchPlan)
+	return true, patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
 }
 
 // runPreflight executes every check and returns the passed and failed results. A non-nil error means
@@ -170,6 +174,10 @@ func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patch
 	}
 
 	checkUpgradeOrder(patchPlan.Spec.Target, rollout, res)
+	r.checkAPIServerSkew(patchPlan.Spec.Target, rollout, res)
+	if err := rollout.CheckControlPlaneQuorum(); err != nil {
+		res.fail(reasonControlPlaneQuorum, "%v", err)
+	}
 
 	if err := r.checkConflictingPlans(ctx, patchPlan, targetNodes, res); err != nil {
 		return nil, err
@@ -180,6 +188,7 @@ func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patch
 	probes := r.checkTalosNodes(ctx, patchPlan, targetNodes, res)
 
 	checkTalosImages(ctx, patchPlan.Spec.Target, probes, res)
+	checkKubernetesImages(ctx, patchPlan.Spec.Target, res)
 	checkVersionCompatibility(ctx, patchPlan.Spec.Target, probes, res)
 
 	return res, nil
@@ -209,6 +218,57 @@ func checkUpgradeOrder(target patchv1alpha1.TargetSpec, rollout *scheduling.Roll
 	res.pass("strategy.order upgrades control plane nodes before worker nodes")
 }
 
+// checkAPIServerSkew covers a Kubernetes upgrade whose rollout has no control plane node: nothing in the
+// plan upgrades the API server first, so the running one must already be at least the target minor.
+func (r *PatchPlanReconciler) checkAPIServerSkew(target patchv1alpha1.TargetSpec, rollout *scheduling.Rollout, res *preflightResult) {
+	if target.KubernetesVersion == "" || r.Discovery == nil || len(rollout.ControlPlaneNodes()) > 0 {
+		return
+	}
+	info, err := r.Discovery.ServerVersion()
+	if err != nil {
+		res.fail(reasonKubernetesAPIUnhealthy, "unable to read the Kubernetes API server version: %v", err)
+		return
+	}
+	checkKubeletSkew(target.KubernetesVersion, info.GitVersion, res)
+}
+
+// checkKubeletSkew fails when the target kubelet minor version is newer than the API server's.
+func checkKubeletSkew(targetVersion, apiServerVersion string, res *preflightResult) {
+	target, err := utilversion.ParseGeneric(targetVersion)
+	if err != nil {
+		res.fail(reasonInvalidTarget, "invalid kubernetesVersion %q: %v", targetVersion, err)
+		return
+	}
+	server, err := utilversion.ParseGeneric(apiServerVersion)
+	if err != nil {
+		res.fail(reasonKubernetesAPIUnhealthy, "unparsable API server version %q: %v", apiServerVersion, err)
+		return
+	}
+	if target.Major() > server.Major() || (target.Major() == server.Major() && target.Minor() > server.Minor()) {
+		res.fail(reasonKubeletNewerThanAPIServer,
+			"target Kubernetes %s is newer than the running API server %s and no control plane node is in the rollout to upgrade it first",
+			targetVersion, apiServerVersion)
+		return
+	}
+	res.pass("target Kubernetes %s does not outrun the API server %s", targetVersion, apiServerVersion)
+}
+
+// blocksPlan reports whether other is running, or is about to run and wins the tie against plan.
+// Plans not started yet are ordered by creationTimestamp then name so exactly one of two
+// simultaneously applied plans proceeds.
+func blocksPlan(other, plan *patchv1alpha1.PatchPlan) bool {
+	switch other.Status.Phase {
+	case patchv1alpha1.PatchPhaseInProgress, patchv1alpha1.PatchPhasePaused:
+		return true
+	case "", patchv1alpha1.PatchPhasePending, patchv1alpha1.PatchPhasePreflighting:
+		if !other.CreationTimestamp.Equal(&plan.CreationTimestamp) {
+			return other.CreationTimestamp.Before(&plan.CreationTimestamp)
+		}
+		return other.Name < plan.Name
+	}
+	return false
+}
+
 // checkConflictingPlans fails if another active PatchPlan targets any of the same nodes.
 func (r *PatchPlanReconciler) checkConflictingPlans(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, targetNodes []corev1.Node, res *preflightResult) error {
 	var plans patchv1alpha1.PatchPlanList
@@ -227,7 +287,7 @@ func (r *PatchPlanReconciler) checkConflictingPlans(ctx context.Context, patchPl
 		if other.Name == patchPlan.Name || !other.DeletionTimestamp.IsZero() || other.IsAutoUpdateTemplate() {
 			continue
 		}
-		if other.Status.Phase != patchv1alpha1.PatchPhaseInProgress && other.Status.Phase != patchv1alpha1.PatchPhasePaused {
+		if !blocksPlan(other, patchPlan) {
 			continue
 		}
 
@@ -279,24 +339,12 @@ func (r *PatchPlanReconciler) checkKubernetesAPI(ctx context.Context, res *prefl
 // checkTalosNodes verifies the Talos credentials work and every selected node answers on the Talos
 // API. It returns what each reachable node reported, or nil if the Talos API can't be used at all.
 func (r *PatchPlanReconciler) checkTalosNodes(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, targetNodes []corev1.Node, res *preflightResult) []nodeProbe {
-	logger := log.FromContext(ctx)
-
-	talosConfig, err := resolveTalosConfig(ctx, r.Client, patchPlan)
+	talosClient, closeTalos, err := openTalos(ctx, r.Client, r.Namespace, patchPlan)
 	if err != nil {
 		res.fail(reasonTalosCredentialsInvalid, "%v", err)
 		return nil
 	}
-
-	talosClient, err := talos.NewClient(talosConfig)
-	if err != nil {
-		res.fail(reasonTalosCredentialsInvalid, "failed to create Talos client: %v", err)
-		return nil
-	}
-	defer func() {
-		if cerr := talosClient.Close(); cerr != nil {
-			logger.Error(cerr, "failed to close Talos client")
-		}
-	}()
+	defer closeTalos()
 
 	connCtx, cancel := context.WithTimeout(ctx, preflightCallTimeout)
 	defer cancel()
@@ -304,7 +352,7 @@ func (r *PatchPlanReconciler) checkTalosNodes(ctx context.Context, patchPlan *pa
 		res.fail(reasonTalosCredentialsInvalid, "%v", err)
 		return nil
 	}
-	res.pass("Talos credentials accepted by endpoints %s", strings.Join(talosConfig.Endpoints, ", "))
+	res.pass("Talos credentials accepted by endpoints %s", strings.Join(patchPlan.Spec.TalosConfig.Endpoints, ", "))
 
 	target := patchPlan.Spec.Target
 	needSchematic := target.TalosVersion != "" && target.Source == "factory" && target.SchematicID == ""
@@ -409,6 +457,33 @@ func checkTalosImages(ctx context.Context, target patchv1alpha1.TargetSpec, prob
 				image, truncatedList(images[image], preflightMaxNamesInMessages))
 		default:
 			res.fail(reasonTalosImageUnavailable, "unable to verify installer image %s: %v", image, err)
+		}
+	}
+}
+
+// checkKubernetesImages verifies the kubelet and control plane images exist before any node is patched
+// to pull them.
+func checkKubernetesImages(ctx context.Context, target patchv1alpha1.TargetSpec, res *preflightResult) {
+	v := target.KubernetesVersion
+	if v == "" {
+		return
+	}
+
+	checker := registry.Checker{HTTPClient: &http.Client{Timeout: preflightImageCheckTimeout}}
+	for _, image := range []string{
+		patchutil.BuildKubeletImage(v),
+		patchutil.BuildAPIServerImage(v),
+		patchutil.BuildControllerManagerImage(v),
+		patchutil.BuildSchedulerImage(v),
+	} {
+		err := checker.Exists(ctx, image)
+		switch {
+		case err == nil:
+			res.pass("Kubernetes image %s exists", image)
+		case errors.Is(err, registry.ErrNotFound):
+			res.fail(reasonKubernetesImageUnavailable, "Kubernetes image %s does not exist", image)
+		default:
+			res.fail(reasonKubernetesImageUnavailable, "unable to verify Kubernetes image %s: %v", image, err)
 		}
 	}
 }

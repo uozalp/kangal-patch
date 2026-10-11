@@ -46,16 +46,9 @@ func IsInMaintenanceWindow(spec *v1alpha1.MaintenanceSpec, now time.Time) (bool,
 
 // isExcludedDate checks if the given date is in the excluded dates list
 func isExcludedDate(excludeDates []string, now time.Time) bool {
-	currentDate := now.Format("2006-01-02")
+	currentDate := now.UTC().Format("2006-01-02")
 	for _, excludeDate := range excludeDates {
-		// Parse date in YYYY-MM-DD format only
-		excludeDateParsed, err := time.Parse("2006-01-02", excludeDate)
-		if err != nil {
-			// Skip invalid date format
-			continue
-		}
-
-		if excludeDateParsed.Format("2006-01-02") == currentDate {
+		if excludeDate == currentDate {
 			return true
 		}
 	}
@@ -66,11 +59,6 @@ func isExcludedDate(excludeDates []string, now time.Time) bool {
 func isInWindow(window v1alpha1.MaintenanceWindow, now time.Time) (bool, error) {
 	// Use UTC for all time comparisons
 	nowInTZ := now.UTC()
-
-	// Check if current day matches
-	if !isDayMatch(window.Days, nowInTZ) {
-		return false, nil
-	}
 
 	// Parse start and end times
 	startTime, err := parseTimeOfDay(window.StartTime, nowInTZ)
@@ -86,12 +74,15 @@ func isInWindow(window v1alpha1.MaintenanceWindow, now time.Time) (bool, error) 
 	// Check if current time is within the window
 	// Handle case where window spans midnight
 	if endTime.Before(startTime) {
-		// Window spans midnight (e.g., 22:00 - 02:00)
-		return nowInTZ.After(startTime) || nowInTZ.Before(endTime) || nowInTZ.Equal(startTime), nil
+		// Window spans midnight (e.g., 22:00 - 02:00): the listed day owns the evening part,
+		// the previous day's entry owns the after-midnight part.
+		evening := !nowInTZ.Before(startTime) && isDayMatch(window.Days, nowInTZ)
+		morning := nowInTZ.Before(endTime) && isDayMatch(window.Days, nowInTZ.AddDate(0, 0, -1))
+		return evening || morning, nil
 	}
 
 	// Normal case
-	return (nowInTZ.After(startTime) || nowInTZ.Equal(startTime)) && nowInTZ.Before(endTime), nil
+	return !nowInTZ.Before(startTime) && nowInTZ.Before(endTime) && isDayMatch(window.Days, nowInTZ), nil
 }
 
 // isDayMatch checks if the current day matches the window's day specification
@@ -155,8 +146,23 @@ func parseTimeOfDay(timeStr string, referenceDate time.Time) (time.Time, error) 
 // NextMaintenanceWindow returns the next time a maintenance window will open
 // Useful for determining when to retry if outside maintenance window
 func NextMaintenanceWindow(spec *v1alpha1.MaintenanceSpec, now time.Time) (time.Time, error) {
-	if spec == nil || len(spec.Windows) == 0 {
-		return now, nil // No windows means always available
+	if spec == nil {
+		return now, nil
+	}
+
+	// Without windows only excluded dates block: the next open time is the start of the first free day.
+	if len(spec.Windows) == 0 {
+		for i := range 366 {
+			d := now.UTC().AddDate(0, 0, i)
+			if isExcludedDate(spec.ExcludeDates, d) {
+				continue
+			}
+			if i == 0 {
+				return now, nil
+			}
+			return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC), nil
+		}
+		return time.Time{}, fmt.Errorf("every day in the next year is excluded")
 	}
 
 	var nextWindow time.Time

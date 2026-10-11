@@ -48,7 +48,7 @@ func (r *PatchPlanReconciler) syncLeases(ctx context.Context, patchPlan *patchv1
 
 	for i := range leaseList.Items {
 		lease := &leaseList.Items[i]
-		jobName := lease.Labels[patchv1alpha1.LabelPatchJob]
+		jobName := lease.Name // a Lease is named after its PatchJob
 		job, ok := jobsByName[jobName]
 
 		// A Lease whose job is gone is garbage collected through its owner reference; the job may
@@ -100,7 +100,6 @@ func (r *PatchPlanReconciler) acquireLease(ctx context.Context, job *patchv1alph
 				patchv1alpha1.LabelPatchPlan: job.Spec.PatchPlanRef,
 				patchv1alpha1.LabelGroup:     group,
 				patchv1alpha1.LabelNode:      job.Spec.NodeName,
-				patchv1alpha1.LabelPatchJob:  job.Name,
 			},
 		},
 		Spec: coordinationv1.LeaseSpec{

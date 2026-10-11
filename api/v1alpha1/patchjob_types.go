@@ -44,6 +44,10 @@ type PatchJobStatus struct {
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
+	// DrainStartTime is when draining began; the plan's drainTimeout counts from here
+	// +optional
+	DrainStartTime *metav1.Time `json:"drainStartTime,omitempty"`
+
 	// RebootStartTime is when the Talos upgrade was started; the plan's rebootTimeout counts from here
 	// +optional
 	RebootStartTime *metav1.Time `json:"rebootStartTime,omitempty"`
@@ -73,10 +77,6 @@ type PatchJobStatus struct {
 	// TargetKubernetesVersion is the extracted Kubernetes version tag for display (e.g., v1.32.4)
 	// +optional
 	TargetKubernetesVersion string `json:"targetKubernetesVersion,omitempty"`
-
-	// Conditions represent the latest available observations of the PatchJob's state
-	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // PatchJobPhase represents the phase of a patch job

@@ -14,6 +14,7 @@ import (
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
+	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/scheduling"
 )
 
@@ -56,7 +57,7 @@ func (r *PatchPlanReconciler) scheduleNodes(ctx context.Context, patchPlan *patc
 			return ctrl.Result{RequeueAfter: requeueWhenAtMaxConcurrency}, nil
 		}
 
-		if wait := delayRemaining(patchPlan); wait > 0 {
+		if wait := delayRemaining(patchPlan, jobsByNode); wait > 0 {
 			logger.Info("waiting for delayBetweenNodes", "remaining", wait)
 			return ctrl.Result{RequeueAfter: wait}, nil
 		}
@@ -92,10 +93,19 @@ func (r *PatchPlanReconciler) scheduleNodes(ctx context.Context, patchPlan *patc
 	return ctrl.Result{RequeueAfter: requeueWhenJobsInProgress}, nil
 }
 
-// delayRemaining is how much of delayBetweenNodes is left since the last node was scheduled.
-func delayRemaining(patchPlan *patchv1alpha1.PatchPlan) time.Duration {
-	last := patchPlan.Status.LastNodeScheduledAt
-	if last == nil {
+// delayRemaining is how much of delayBetweenNodes is left, counted from the later of the last node
+// being scheduled and the last job finishing.
+func delayRemaining(patchPlan *patchv1alpha1.PatchPlan, jobsByNode map[string]*patchv1alpha1.PatchJob) time.Duration {
+	var last time.Time
+	if t := patchPlan.Status.LastNodeScheduledAt; t != nil {
+		last = t.Time
+	}
+	for _, job := range jobsByNode {
+		if t := job.Status.CompletionTime; t != nil && t.After(last) {
+			last = t.Time
+		}
+	}
+	if last.IsZero() {
 		return 0
 	}
 	return time.Until(last.Add(patchPlan.Spec.DelayBetweenNodes.Duration))
@@ -118,13 +128,13 @@ func (r *PatchPlanReconciler) markInProgress(ctx context.Context, patchPlan *pat
 	// Clear completion time if resuming after completion/failure
 	patchPlan.Status.CompletionTime = nil
 
-	return r.patchStatus(ctx, original, patchPlan)
+	return patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
 }
 
 // waitForControlPlane gates worker nodes on a Kubernetes upgrade: every control plane node
-// (apiserver, kubelet) must have completed and kube-proxy must be rolled out before any worker's
-// kubelet is bumped - a kubelet must never run newer than the apiserver it connects to. It returns
-// how long to wait, or zero when the node may be scheduled.
+// (apiserver, kubelet) must have completed before any worker's kubelet is bumped - a kubelet must
+// never run newer than the apiserver it connects to. It returns how long to wait, or zero when the
+// node may be scheduled. kube-proxy is rolled out earlier by ensureKubeProxy.
 func (r *PatchPlanReconciler) waitForControlPlane(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, rollout *scheduling.Rollout, jobsByNode map[string]*patchv1alpha1.PatchJob, node *corev1.Node) (time.Duration, error) {
 	if patchPlan.Spec.Target.KubernetesVersion == "" || nodeutil.IsControlPlane(node) {
 		return 0, nil
@@ -137,11 +147,38 @@ func (r *PatchPlanReconciler) waitForControlPlane(ctx context.Context, patchPlan
 		return 0, nil
 	}
 	if !allNodesCompleted(controlPlane, jobsByNode) {
+		for i := range controlPlane {
+			job, ok := jobsByNode[controlPlane[i].Name]
+			if !ok || job.Status.Phase != patchv1alpha1.PatchJobPhaseFailed {
+				continue
+			}
+			// A Failed job never becomes Completed, so say why the workers are not moving.
+			msg := fmt.Sprintf("worker rollout blocked: control plane node %s failed", controlPlane[i].Name)
+			if patchPlan.Status.Message != msg {
+				original := patchPlan.DeepCopy()
+				patchPlan.Status.Message = msg
+				if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+					return 0, err
+				}
+			}
+			return requeueWhenJobsInProgress, nil
+		}
 		logger.Info("waiting for control plane nodes to finish kubernetes upgrade before patching workers")
 		return requeueWhenJobsInProgress, nil
 	}
 
-	if patchPlan.Status.KubeProxyUpgraded {
+	return 0, nil
+}
+
+// ensureKubeProxy upgrades kube-proxy once every control plane job has completed, whether or not the
+// rollout contains workers. It returns how long to wait for the rollout, or zero when nothing is left to do.
+func (r *PatchPlanReconciler) ensureKubeProxy(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, rollout *scheduling.Rollout, jobsByNode map[string]*patchv1alpha1.PatchJob) (time.Duration, error) {
+	if patchPlan.Spec.Target.KubernetesVersion == "" || patchPlan.Status.KubeProxyUpgraded {
+		return 0, nil
+	}
+
+	controlPlane := rollout.ControlPlaneNodes()
+	if len(controlPlane) == 0 || !allNodesCompleted(controlPlane, jobsByNode) {
 		return 0, nil
 	}
 
@@ -150,16 +187,40 @@ func (r *PatchPlanReconciler) waitForControlPlane(ctx context.Context, patchPlan
 		return 0, err
 	}
 	if !done {
-		logger.Info("waiting for kube-proxy rollout before patching workers")
+		message := "Waiting for the kube-proxy rollout"
+		timeout := patchPlan.Spec.KubernetesUpgradeTimeout.Duration
+		if timeout <= 0 {
+			timeout = defaultKubernetesUpgradeTimeout
+		}
+		// shortcut: only reports a stuck rollout, never fails the plan; add a failure path if this proves common.
+		if time.Since(lastCompletion(controlPlane, jobsByNode)) > timeout {
+			message = fmt.Sprintf("kube-proxy rollout not finished %s after the control plane completed; check the kube-proxy DaemonSet in %s", timeout, kubeProxyNamespace)
+		}
+		if patchPlan.Status.Message != message {
+			original := patchPlan.DeepCopy()
+			patchPlan.Status.Message = message
+			if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+				return 0, err
+			}
+		}
+		log.FromContext(ctx).Info("waiting for kube-proxy rollout")
 		return requeueForNextNode, nil
 	}
 
 	original := patchPlan.DeepCopy()
 	patchPlan.Status.KubeProxyUpgraded = true
-	if err := r.patchStatus(ctx, original, patchPlan); err != nil {
-		return 0, err
+	return 0, patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
+}
+
+// lastCompletion is the latest completion time of the nodes' jobs.
+func lastCompletion(nodes []corev1.Node, jobsByNode map[string]*patchv1alpha1.PatchJob) time.Time {
+	var last time.Time
+	for i := range nodes {
+		if job, ok := jobsByNode[nodes[i].Name]; ok && job.Status.CompletionTime != nil && job.Status.CompletionTime.After(last) {
+			last = job.Status.CompletionTime.Time
+		}
 	}
-	return 0, nil
+	return last
 }
 
 // createPatchJob creates the PatchJob of a node together with the Lease holding its concurrency slot.
@@ -205,7 +266,7 @@ func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *pat
 	original := patchPlan.DeepCopy()
 	patchPlan.Status.LastNodeScheduledAt = &metav1.Time{Time: time.Now()}
 	patchPlan.Status.Message = fmt.Sprintf("Patching node %s (group %s)", node.Name, group)
-	if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+	if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 		logger.Error(err, "unable to update PatchPlan status")
 		return err
 	}
@@ -230,7 +291,7 @@ func (r *PatchPlanReconciler) failInvalidStrategy(ctx context.Context, patchPlan
 	patchPlan.Status.Phase = patchv1alpha1.PatchPhaseFailed
 	patchPlan.Status.Message = "Invalid strategy: " + cause.Error()
 
-	if err := r.patchStatus(ctx, original, patchPlan); err != nil {
+	if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueWhenPreflightFailed}, nil
