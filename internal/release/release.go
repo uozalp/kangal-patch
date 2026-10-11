@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
+
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 )
 
 const (
@@ -88,7 +88,7 @@ func (f *Fetcher) List(ctx context.Context) ([]Release, error) {
 			continue
 		}
 		v, err := ParseVersion(r.TagName)
-		if err != nil || v.Pre != "" {
+		if err != nil || v.PreRelease() != "" {
 			continue
 		}
 		releases = append(releases, Release{Version: v, PublishedAt: r.PublishedAt})
@@ -139,71 +139,34 @@ func Select(releases []Release, current Version, allow string, minAge time.Durat
 }
 
 func permitted(current, candidate Version, allow string) bool {
-	if candidate.Compare(current) <= 0 || candidate.Major != current.Major {
+	if candidate.Compare(current) <= 0 || candidate.Major() != current.Major() {
 		return false
 	}
 	if allow == AllowMinor {
-		return candidate.Minor <= current.Minor+1
+		return candidate.Minor() <= current.Minor()+1
 	}
-	return candidate.Minor == current.Minor
+	return candidate.Minor() == current.Minor()
 }
 
 // Version is a parsed Talos version such as v1.13.4 or v1.14.0-beta.0.
-type Version struct {
-	Major, Minor, Patch int
-	// Pre is the prerelease suffix without the leading dash, empty for a stable release.
-	Pre string
-}
+type Version struct{ *utilversion.Version }
 
 // ParseVersion parses "vMAJOR.MINOR.PATCH[-pre]"; the leading "v" is optional.
 func ParseVersion(s string) (Version, error) {
-	core, pre, _ := strings.Cut(strings.TrimPrefix(s, "v"), "-")
-
-	parts := strings.Split(core, ".")
-	if len(parts) != 3 {
-		return Version{}, fmt.Errorf("invalid version %q: expected MAJOR.MINOR.PATCH", s)
-	}
-
-	var nums [3]int
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return Version{}, fmt.Errorf("invalid version %q: bad number %q", s, p)
-		}
-		nums[i] = n
-	}
-	return Version{Major: nums[0], Minor: nums[1], Patch: nums[2], Pre: pre}, nil
+	v, err := utilversion.ParseSemantic(s)
+	return Version{v}, err
 }
 
-// Compare returns -1, 0 or 1. A prerelease sorts before its stable release; two prereleases of the
-// same core version are compared lexically.
+// Compare returns -1, 0 or 1. A prerelease sorts before its stable release.
 func (v Version) Compare(o Version) int {
-	for _, d := range []int{v.Major - o.Major, v.Minor - o.Minor, v.Patch - o.Patch} {
-		if d != 0 {
-			if d < 0 {
-				return -1
-			}
-			return 1
-		}
-	}
-
 	switch {
-	case v.Pre == o.Pre:
-		return 0
-	case v.Pre == "":
-		return 1
-	case o.Pre == "":
+	case v.LessThan(o.Version):
 		return -1
-	default:
-		return strings.Compare(v.Pre, o.Pre)
+	case v.GreaterThan(o.Version):
+		return 1
 	}
+	return 0
 }
 
 // String formats the version with a leading "v".
-func (v Version) String() string {
-	s := fmt.Sprintf("v%d.%d.%d", v.Major, v.Minor, v.Patch)
-	if v.Pre != "" {
-		s += "-" + v.Pre
-	}
-	return s
-}
+func (v Version) String() string { return "v" + v.Version.String() }

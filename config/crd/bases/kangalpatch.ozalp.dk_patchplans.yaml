@@ -82,6 +82,12 @@ spec:
                 description: DrainTimeout is the maximum time to wait for node drain
                 pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
                 type: string
+              evictUnmanagedPods:
+                default: false
+                description: |-
+                  EvictUnmanagedPods allows the drain to evict pods that have no controller (bare pods). They are
+                  deleted for good; without this the drain refuses and the PatchJob fails.
+                type: boolean
               failurePolicy:
                 default: {}
                 description: FailurePolicy defines what happens when a node fails
@@ -198,6 +204,7 @@ spec:
                             Days is a list of weekdays when this window applies (e.g., ["Monday", "Friday"])
                             If empty or omitted, applies to all days
                           items:
+                            pattern: (?i)^(mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?|any|all)$
                             type: string
                           type: array
                         disabled:
@@ -345,6 +352,11 @@ spec:
                 description: Target defines the target Talos and/or Kubernetes version
                   specification
                 properties:
+                  allowTalosDowngrade:
+                    description: |-
+                      AllowTalosDowngrade permits a talosVersion older than a node's running version, e.g. to roll back a
+                      broken release. Without it such a plan fails preflight. Kubernetes downgrades are never allowed.
+                    type: boolean
                   autoUpdate:
                     description: |-
                       AutoUpdate makes this PatchPlan a template that creates a child PatchPlan per Talos release.
@@ -384,6 +396,7 @@ spec:
                     description: |-
                       Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
                       Required when source=factory
+                    pattern: ^[a-z0-9-]+$
                     type: string
                   kubernetesVersion:
                     description: |-
@@ -397,6 +410,7 @@ spec:
                     description: |-
                       SchematicID is the Talos factory schematic ID.
                       When source=factory and this is omitted, each node keeps the schematic it is currently running.
+                    pattern: ^[a-f0-9]{64}$
                     type: string
                   secureBoot:
                     default: false
@@ -440,6 +454,10 @@ spec:
                 when target.autoUpdate is enabled
               rule: '!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled)
                 || (!has(self.target.talosVersion) && !has(self.target.kubernetesVersion))'
+            - message: target.allowTalosDowngrade is not allowed on an auto-update
+                template
+              rule: '!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled)
+                || !has(self.target.allowTalosDowngrade) || !self.target.allowTalosDowngrade'
           status:
             description: PatchPlanStatus defines the observed state of PatchPlan
             properties:

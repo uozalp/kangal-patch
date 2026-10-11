@@ -9,7 +9,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
-	"github.com/uozalp/kangal-patch/internal/patchutil"
 )
 
 // requeueWhenRetentionBlocked is how often a due history purge is retried while jobs still run.
@@ -65,9 +64,7 @@ func (r *PatchPlanReconciler) applyRetention(ctx context.Context, patchPlan *pat
 		}
 	}
 
-	original := patchPlan.DeepCopy()
-	patchPlan.Status.HistoryPurged = true
-	if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+	if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) { s.HistoryPurged = true }); err != nil {
 		return false, err
 	}
 

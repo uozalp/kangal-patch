@@ -23,12 +23,13 @@ spec:
           type: RuntimeDefault
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app.kubernetes.io/name: kangalpatch
-                app.kubernetes.io/component: manager
-            topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  control-plane: controller-manager
+              topologyKey: kubernetes.io/hostname
       containers:
       - name: manager
         image: ghcr.io/uozalp/kangal-patch:0.1.2

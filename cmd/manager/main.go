@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"net/http"
 	"os"
@@ -69,8 +68,8 @@ func main() {
 		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
 			&coordinationv1.Lease{}: {Namespaces: map[string]cache.Config{operatorNamespace: {}}},
 		}},
-		// Secrets and the kube-proxy DaemonSet are read one at a time; no cluster-wide list/watch.
-		Client:                        client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &appsv1.DaemonSet{}}}},
+		// Secrets, the kube-proxy DaemonSet and per-node Pod lists (server-side spec.nodeName selector) bypass the cache so it holds no cluster-wide Pods/Secrets.
+		Client:                        client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &appsv1.DaemonSet{}, &corev1.Pod{}}}},
 		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:        probeAddr,
 		LeaderElection:                enableLeaderElection,
@@ -79,15 +78,6 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
-	}
-
-	// Setup field indexer for pod node name (used by drain functionality)
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
-		pod := rawObj.(*corev1.Pod)
-		return []string{pod.Spec.NodeName}
-	}); err != nil {
-		setupLog.Error(err, "unable to create field index for pod nodeName")
 		os.Exit(1)
 	}
 

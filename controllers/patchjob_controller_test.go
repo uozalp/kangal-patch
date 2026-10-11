@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -51,6 +52,7 @@ func TestRetryOrFailRetriesUntilDeadline(t *testing.T) {
 type fakeTalos struct {
 	version       string
 	upgradeImages []string
+	upgradeErr    error
 }
 
 func (f *fakeTalos) GetVersion(context.Context, string) (string, error) { return f.version, nil }
@@ -59,7 +61,7 @@ func (f *fakeTalos) GetSchematicID(context.Context, string) (string, error) {
 }
 func (f *fakeTalos) Upgrade(_ context.Context, _, image string) error {
 	f.upgradeImages = append(f.upgradeImages, image)
-	return nil
+	return f.upgradeErr
 }
 func (f *fakeTalos) PatchKubeletVersion(context.Context, string, string) error { return nil }
 func (f *fakeTalos) PatchControlPlaneVersion(context.Context, string, string, string, string) error {
@@ -163,9 +165,11 @@ func (h *jobHarness) wantPhase(got, want patchv1alpha1.PatchJobPhase) {
 	}
 }
 
+var managedBy = []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "rs", APIVersion: "apps/v1", UID: "u", Controller: ptr.To(true)}}
+
 func TestPatchJobWalksPendingToCompleted(t *testing.T) {
 	workload := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default", OwnerReferences: managedBy},
 		Spec:       corev1.PodSpec{NodeName: "n1"},
 	}
 	h := newJobHarness(t, "v1.10.0", workload)
@@ -257,7 +261,7 @@ func TestPatchJobRebootingFailures(t *testing.T) {
 
 func TestPatchJobDrainTimesOutWhenPodsRemain(t *testing.T) {
 	stuck := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "stuck", Namespace: "default", Finalizers: []string{"test/hold"}},
+		ObjectMeta: metav1.ObjectMeta{Name: "stuck", Namespace: "default", Finalizers: []string{"test/hold"}, OwnerReferences: managedBy},
 		Spec:       corev1.PodSpec{NodeName: "n1"},
 	}
 	h := newJobHarness(t, "v1.10.0", stuck)

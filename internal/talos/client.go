@@ -169,20 +169,26 @@ func (c *Client) Upgrade(ctx context.Context, nodeName, image string) error {
 // PatchKubeletVersion patches the kubelet image on a node via a machine config patch. Unlike
 // Upgrade, this does not reboot the node - Talos restarts the kubelet service in place.
 func (c *Client) PatchKubeletVersion(ctx context.Context, nodeName, kubeletImage string) error {
-	patch := fmt.Sprintf(`[{"op": "add", "path": "/machine/kubelet/image", "value": %q}]`, kubeletImage)
-	return c.patchMachineConfig(ctx, nodeName, patch)
+	return c.patchMachineConfig(ctx, nodeName, kubeletPatch(kubeletImage))
+}
+
+func kubeletPatch(kubeletImage string) string {
+	return fmt.Sprintf(`[{"op": "add", "path": "/machine/kubelet/image", "value": %q}]`, kubeletImage)
 }
 
 // PatchControlPlaneVersion patches the kube-apiserver, kube-controller-manager and kube-scheduler
 // static pod images on a control plane node via a machine config patch. Does not reboot the node -
 // Talos restarts the static pods in place.
 func (c *Client) PatchControlPlaneVersion(ctx context.Context, nodeName, apiServerImage, controllerManagerImage, schedulerImage string) error {
-	patch := fmt.Sprintf(`[
+	return c.patchMachineConfig(ctx, nodeName, controlPlanePatch(apiServerImage, controllerManagerImage, schedulerImage))
+}
+
+func controlPlanePatch(apiServerImage, controllerManagerImage, schedulerImage string) string {
+	return fmt.Sprintf(`[
 		{"op": "add", "path": "/cluster/apiServer/image", "value": %q},
 		{"op": "add", "path": "/cluster/controllerManager/image", "value": %q},
 		{"op": "add", "path": "/cluster/scheduler/image", "value": %q}
 	]`, apiServerImage, controllerManagerImage, schedulerImage)
-	return c.patchMachineConfig(ctx, nodeName, patch)
 }
 
 // patchMachineConfig applies a JSON6902 patch to a node's machine config without a reboot. It

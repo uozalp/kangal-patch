@@ -20,12 +20,12 @@ func mustParse(t *testing.T, s string) Version {
 func Test_ParseVersion(t *testing.T) {
 	tests := []struct {
 		in      string
-		want    Version
+		want    string
 		wantErr bool
 	}{
-		{in: "v1.13.4", want: Version{1, 13, 4, ""}},
-		{in: "1.13.4", want: Version{1, 13, 4, ""}},
-		{in: "v1.14.0-beta.0", want: Version{1, 14, 0, "beta.0"}},
+		{in: "v1.13.4", want: "v1.13.4"},
+		{in: "1.13.4", want: "v1.13.4"},
+		{in: "v1.14.0-beta.0", want: "v1.14.0-beta.0"},
 		{in: "v1.13", wantErr: true},
 		{in: "v1.x.0", wantErr: true},
 		{in: "", wantErr: true},
@@ -36,8 +36,8 @@ func Test_ParseVersion(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %t", err, tt.wantErr)
 			}
-			if err == nil && got != tt.want {
-				t.Errorf("got %+v, want %+v", got, tt.want)
+			if err == nil && got.String() != tt.want {
+				t.Errorf("got %s, want %s", got, tt.want)
 			}
 		})
 	}

@@ -2,7 +2,9 @@ package drain
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -79,9 +81,14 @@ const DefaultTimeout = 5 * time.Minute
 type DrainOptions struct {
 	// RespectPDBs indicates whether to respect PodDisruptionBudgets
 	RespectPDBs bool
+	// EvictUnmanaged allows evicting pods without a controller, which are gone for good afterwards
+	EvictUnmanaged bool
 	// Timeout is the maximum time to wait for drain
 	Timeout time.Duration
 }
+
+// ErrUnmanagedPods means pods without a controller block the drain.
+var ErrUnmanagedPods = errors.New("pods without a controller would be lost")
 
 // DrainNode evicts all pods from a node. It returns blocked=true when a PDB refused at least one
 // eviction (RespectPDBs); the caller should retry later.
@@ -95,6 +102,17 @@ func (d *Drainer) DrainNode(ctx context.Context, nodeName string, opts DrainOpti
 		return false, nil
 	}
 
+	if !opts.EvictUnmanaged {
+		var bare []string
+		for i := range pods {
+			if metav1.GetControllerOf(&pods[i]) == nil {
+				bare = append(bare, pods[i].Namespace+"/"+pods[i].Name)
+			}
+		}
+		if len(bare) > 0 {
+			return false, fmt.Errorf("%w: %s (set evictUnmanagedPods to evict them anyway)", ErrUnmanagedPods, strings.Join(bare, ", "))
+		}
+	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultTimeout
 	}

@@ -54,12 +54,12 @@ const (
 
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchplans,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchplans/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchplans/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kangalpatch.ozalp.dk,resources=patchjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",namespace=kangal-patch,resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=coordination.k8s.io,namespace=kangal-patch,resources=leases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// Leader election records events in the operator namespace.
+// +kubebuilder:rbac:groups="",namespace=kangal-patch,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,resourceNames=kube-proxy,verbs=get;update;patch
 
 // kubeProxyDaemonSetName/kubeProxyNamespace identify the cluster-wide kube-proxy DaemonSet that
@@ -197,7 +197,13 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		nextWindow, err := maintenance.NextMaintenanceWindow(patchPlan.Spec.Maintenance, time.Now())
 		if err != nil {
 			logger.Info("unable to determine next maintenance window", "error", err.Error())
+			if err := r.setMessage(ctx, &patchPlan, fmt.Sprintf("Outside maintenance window and no window found: %v", err)); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{RequeueAfter: 15 * time.Minute}, nil
+		}
+		if err := r.setMessage(ctx, &patchPlan, "Waiting for maintenance window opening at "+nextWindow.UTC().Format(time.RFC3339)); err != nil {
+			return ctrl.Result{}, err
 		}
 		requeueDuration := max(time.Until(nextWindow), time.Second) // <= 0 would mean no requeue at all
 		logger.Info("scheduling for next maintenance window", "nextWindow", nextWindow, "requeue", requeueDuration)
@@ -252,12 +258,11 @@ func (r *PatchPlanReconciler) failureBudgetExceeded(ctx context.Context, patchPl
 	}
 
 	if patchPlan.Status.Phase != patchv1alpha1.PatchPhaseFailed {
-		original := patchPlan.DeepCopy()
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseFailed
-		patchPlan.Status.Message = fmt.Sprintf("failure policy Halt: %d failed node(s), maxFailures %d", failedCount, policy.MaxFailures)
-		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
-
-		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+		if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+			s.Phase = patchv1alpha1.PatchPhaseFailed
+			s.Message = fmt.Sprintf("failure policy Halt: %d failed node(s), maxFailures %d", failedCount, policy.MaxFailures)
+			s.CompletionTime = &metav1.Time{Time: time.Now()}
+		}); err != nil {
 			return true, err
 		}
 	}
@@ -277,9 +282,24 @@ func (r *PatchPlanReconciler) pauseOnFailures(ctx context.Context, patchPlan *pa
 		}
 	}
 
+	return r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+		s.Phase = patchv1alpha1.PatchPhasePaused
+		s.Message = fmt.Sprintf("Paused by failure policy: %d failed node(s). Inspect or delete the failed PatchJobs, then set spec.paused=false to resume", failedCount)
+	})
+}
+
+// setMessage updates status.message unless it already holds msg.
+func (r *PatchPlanReconciler) setMessage(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, msg string) error {
+	if patchPlan.Status.Message == msg {
+		return nil
+	}
+	return r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) { s.Message = msg })
+}
+
+// updateStatus applies mutate to the plan's status and patches the difference.
+func (r *PatchPlanReconciler) updateStatus(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, mutate func(*patchv1alpha1.PatchPlanStatus)) error {
 	original := patchPlan.DeepCopy()
-	patchPlan.Status.Phase = patchv1alpha1.PatchPhasePaused
-	patchPlan.Status.Message = fmt.Sprintf("Paused by failure policy: %d failed node(s). Inspect or delete the failed PatchJobs, then set spec.paused=false to resume", failedCount)
+	mutate(&patchPlan.Status)
 	return patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
 }
 
@@ -340,12 +360,11 @@ func (r *PatchPlanReconciler) ensureCancelledState(ctx context.Context, patchPla
 	logger := log.FromContext(ctx)
 
 	if patchPlan.Status.Phase != patchv1alpha1.PatchPhaseCancelled {
-		original := patchPlan.DeepCopy()
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseCancelled
-		patchPlan.Status.Message = "Patching cancelled by user"
-		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
-
-		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+		if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+			s.Phase = patchv1alpha1.PatchPhaseCancelled
+			s.Message = "Patching cancelled by user"
+			s.CompletionTime = &metav1.Time{Time: time.Now()}
+		}); err != nil {
 			logger.Error(err, "unable to update PatchPlan status to cancelled")
 			return true, err
 		}
@@ -363,11 +382,10 @@ func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *p
 	// Check if paused
 	if patchPlan.Spec.Paused {
 		if patchPlan.Status.Phase != patchv1alpha1.PatchPhasePaused {
-			original := patchPlan.DeepCopy()
-			patchPlan.Status.Phase = patchv1alpha1.PatchPhasePaused
-			patchPlan.Status.Message = "Patching paused by user"
-
-			if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+			if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+				s.Phase = patchv1alpha1.PatchPhasePaused
+				s.Message = "Patching paused by user"
+			}); err != nil {
 				logger.Error(err, "unable to update PatchPlan status to paused")
 				return true, err
 			}
@@ -378,16 +396,16 @@ func (r *PatchPlanReconciler) ensurePauseState(ctx context.Context, patchPlan *p
 
 	// Resume from paused state
 	if patchPlan.Status.Phase == patchv1alpha1.PatchPhasePaused {
-		original := patchPlan.DeepCopy()
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseInProgress
-		patchPlan.Status.Message = "Resuming patching operation"
 		// Resuming a plan the failure policy paused accepts the failures seen so far
-		if patchPlan.Spec.FailurePolicy.Type == patchv1alpha1.FailurePolicyPause &&
-			patchPlan.Spec.FailurePolicy.Exceeded(newFailures(patchPlan, failedCount)) {
-			patchPlan.Status.FailuresAcknowledged = failedCount
-		}
-
-		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+		acknowledge := patchPlan.Spec.FailurePolicy.Type == patchv1alpha1.FailurePolicyPause &&
+			patchPlan.Spec.FailurePolicy.Exceeded(newFailures(patchPlan, failedCount))
+		if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+			s.Phase = patchv1alpha1.PatchPhaseInProgress
+			s.Message = "Resuming patching operation"
+			if acknowledge {
+				s.FailuresAcknowledged = failedCount
+			}
+		}); err != nil {
 			logger.Error(err, "unable to update PatchPlan status")
 			return false, err
 		}
@@ -459,12 +477,11 @@ func (r *PatchPlanReconciler) allNodesProcessed(ctx context.Context, patchPlan *
 	logger := log.FromContext(ctx)
 
 	if patchPlan.Status.Phase != patchv1alpha1.PatchPhaseCompleted {
-		original := patchPlan.DeepCopy()
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseCompleted
-		patchPlan.Status.Message = "all nodes processed"
-		patchPlan.Status.CompletionTime = &metav1.Time{Time: time.Now()}
-
-		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+		if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+			s.Phase = patchv1alpha1.PatchPhaseCompleted
+			s.Message = "all nodes processed"
+			s.CompletionTime = &metav1.Time{Time: time.Now()}
+		}); err != nil {
 			logger.Error(err, "unable to update PatchPlan status to completed")
 			return true, err
 		}

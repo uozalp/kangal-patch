@@ -17,7 +17,7 @@ COPY controllers/ controllers/
 COPY internal/ internal/
 
 # Build
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/manager/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o manager cmd/manager/main.go
 
 # Use distroless as minimal base image to package the manager binary
 FROM gcr.io/distroless/static:nonroot

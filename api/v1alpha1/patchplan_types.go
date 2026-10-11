@@ -85,6 +85,11 @@ type TargetSpec struct {
 	// +optional
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 
+	// AllowTalosDowngrade permits a talosVersion older than a node's running version, e.g. to roll back a
+	// broken release. Without it such a plan fails preflight. Kubernetes downgrades are never allowed.
+	// +optional
+	AllowTalosDowngrade bool `json:"allowTalosDowngrade,omitempty"`
+
 	// Source specifies the image source: "factory" or "ghcr"
 	// +kubebuilder:validation:Enum=factory;ghcr
 	// +kubebuilder:default=ghcr
@@ -92,11 +97,13 @@ type TargetSpec struct {
 
 	// Installer specifies the installer type (e.g., "aws", "azure", "nocloud")
 	// Required when source=factory
+	// +kubebuilder:validation:Pattern=`^[a-z0-9-]+$`
 	// +optional
 	Installer string `json:"installer,omitempty"`
 
 	// SchematicID is the Talos factory schematic ID.
 	// When source=factory and this is omitted, each node keeps the schematic it is currently running.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
 	// +optional
 	SchematicID string `json:"schematicID,omitempty"`
 
@@ -110,6 +117,7 @@ type TargetSpec struct {
 // PatchPlanSpec defines the desired state of PatchPlan
 // +kubebuilder:validation:XValidation:rule="has(self.target.talosVersion) || has(self.target.kubernetesVersion) || (has(self.target.autoUpdate) && self.target.autoUpdate.enabled)",message="at least one of target.talosVersion, target.kubernetesVersion or an enabled target.autoUpdate must be set"
 // +kubebuilder:validation:XValidation:rule="!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled) || (!has(self.target.talosVersion) && !has(self.target.kubernetesVersion))",message="target.talosVersion and target.kubernetesVersion must be omitted when target.autoUpdate is enabled"
+// +kubebuilder:validation:XValidation:rule="!(has(self.target.autoUpdate) && self.target.autoUpdate.enabled) || !has(self.target.allowTalosDowngrade) || !self.target.allowTalosDowngrade",message="target.allowTalosDowngrade is not allowed on an auto-update template"
 type PatchPlanSpec struct {
 	// Target defines the target Talos and/or Kubernetes version specification
 	// +kubebuilder:validation:Required
@@ -149,6 +157,11 @@ type PatchPlanSpec struct {
 	// RespectPDBs indicates whether to respect PodDisruptionBudgets during node drain
 	// +kubebuilder:default=true
 	RespectPDBs bool `json:"respectPDBs,omitempty"`
+
+	// EvictUnmanagedPods allows the drain to evict pods that have no controller (bare pods). They are
+	// deleted for good; without this the drain refuses and the PatchJob fails.
+	// +kubebuilder:default=false
+	EvictUnmanagedPods bool `json:"evictUnmanagedPods,omitempty"`
 
 	// DrainTimeout is the maximum time to wait for node drain
 	// +kubebuilder:default="5m"
@@ -287,6 +300,7 @@ type MaintenanceSpec struct {
 type MaintenanceWindow struct {
 	// Days is a list of weekdays when this window applies (e.g., ["Monday", "Friday"])
 	// If empty or omitted, applies to all days
+	// +kubebuilder:validation:items:Pattern=`(?i)^(mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?|any|all)$`
 	// +optional
 	Days []string `json:"days,omitempty"`
 

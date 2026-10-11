@@ -20,6 +20,7 @@ import (
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/registry"
+	"github.com/uozalp/kangal-patch/internal/release"
 	"github.com/uozalp/kangal-patch/internal/scheduling"
 	"github.com/uozalp/kangal-patch/internal/supportmatrix"
 	"github.com/uozalp/kangal-patch/internal/talos"
@@ -40,6 +41,7 @@ const (
 	reasonControlPlaneOrder          = "ControlPlaneOrderRequired"
 	reasonControlPlaneQuorum         = "ControlPlaneQuorumRisk"
 	reasonKubeletNewerThanAPIServer  = "KubeletNewerThanAPIServer"
+	reasonDowngrade                  = "DowngradeNotSupported"
 )
 
 const (
@@ -93,10 +95,10 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 	logger := log.FromContext(ctx)
 
 	if patchPlan.Status.Phase == "" || patchPlan.Status.Phase == patchv1alpha1.PatchPhasePending {
-		original := patchPlan.DeepCopy()
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhasePreflighting
-		patchPlan.Status.Message = "Running preflight checks"
-		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+		if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+			s.Phase = patchv1alpha1.PatchPhasePreflighting
+			s.Message = "Running preflight checks"
+		}); err != nil {
 			return false, err
 		}
 	}
@@ -105,45 +107,33 @@ func (r *PatchPlanReconciler) ensurePreflight(ctx context.Context, patchPlan *pa
 	if err != nil {
 		return false, err
 	}
-	failures := res.failures
 
-	original := patchPlan.DeepCopy()
-
-	if len(failures) > 0 {
-		messages := make([]string, len(failures))
-		for i, f := range failures {
-			messages[i] = f.message
-		}
-		summary := strings.Join(messages, "; ")
-
-		meta.SetStatusCondition(&patchPlan.Status.Conditions, metav1.Condition{
-			Type:               patchv1alpha1.ConditionPreflightPassed,
-			Status:             metav1.ConditionFalse,
-			Reason:             failures[0].reason,
-			Message:            summary,
-			ObservedGeneration: patchPlan.Generation,
-		})
-		patchPlan.Status.Phase = patchv1alpha1.PatchPhaseFailed
-		patchPlan.Status.Message = "Preflight failed: " + summary
-
-		logger.Info("preflight failed", "failures", messages, "passed", res.passed)
-		return false, patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
-	}
-
-	summary := strings.Join(res.passed, "; ")
-
-	meta.SetStatusCondition(&patchPlan.Status.Conditions, metav1.Condition{
+	result := metav1.Condition{
 		Type:               patchv1alpha1.ConditionPreflightPassed,
 		Status:             metav1.ConditionTrue,
 		Reason:             reasonPreflightPassed,
-		Message:            summary,
+		Message:            strings.Join(res.passed, "; "),
 		ObservedGeneration: patchPlan.Generation,
-	})
-	patchPlan.Status.Phase = patchv1alpha1.PatchPhasePending
-	patchPlan.Status.Message = "Preflight passed: " + summary
+	}
+	phase, message := patchv1alpha1.PatchPhasePending, "Preflight passed: "+result.Message
+	passed := len(res.failures) == 0
 
-	logger.Info("preflight passed", "checks", res.passed)
-	return true, patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
+	if !passed {
+		messages := make([]string, len(res.failures))
+		for i, f := range res.failures {
+			messages[i] = f.message
+		}
+		result.Status, result.Reason, result.Message = metav1.ConditionFalse, res.failures[0].reason, strings.Join(messages, "; ")
+		phase, message = patchv1alpha1.PatchPhaseFailed, "Preflight failed: "+result.Message
+		logger.Info("preflight failed", "failures", messages, "passed", res.passed)
+	} else {
+		logger.Info("preflight passed", "checks", res.passed)
+	}
+
+	return passed, r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+		meta.SetStatusCondition(&s.Conditions, result)
+		s.Phase, s.Message = phase, message
+	})
 }
 
 // runPreflight executes every check and returns the passed and failed results. A non-nil error means
@@ -187,6 +177,7 @@ func (r *PatchPlanReconciler) runPreflight(ctx context.Context, patchPlan *patch
 
 	probes := r.checkTalosNodes(ctx, patchPlan, targetNodes, res)
 
+	checkNoDowngrade(patchPlan.Spec.Target, probes, res)
 	checkTalosImages(ctx, patchPlan.Spec.Target, probes, res)
 	checkKubernetesImages(ctx, patchPlan.Spec.Target, res)
 	checkVersionCompatibility(ctx, patchPlan.Spec.Target, probes, res)
@@ -410,6 +401,43 @@ func probeNode(ctx context.Context, talosClient *talos.Client, node *corev1.Node
 		}
 	}
 	return probe, nil
+}
+
+// isDowngrade reports whether target is an older version than current; unparsable versions are not.
+func isDowngrade(current, target string) bool {
+	c, err := release.ParseVersion(current)
+	if err != nil {
+		return false
+	}
+	t, err := release.ParseVersion(target)
+	return err == nil && t.Compare(c) < 0
+}
+
+// checkNoDowngrade rejects a Kubernetes target older than any node's kubelet (etcd data may already be
+// migrated, so never allowed) and a Talos target older than a node's version unless allowTalosDowngrade is set.
+func checkNoDowngrade(target patchv1alpha1.TargetSpec, probes []nodeProbe, res *preflightResult) {
+	var talosOlder, k8sOlder []string
+	for _, p := range probes {
+		if target.TalosVersion != "" && isDowngrade(p.version, target.TalosVersion) {
+			talosOlder = append(talosOlder, fmt.Sprintf("%s (%s)", p.node, p.version))
+		}
+		if target.KubernetesVersion != "" && isDowngrade(p.kubernetesVersion, target.KubernetesVersion) {
+			k8sOlder = append(k8sOlder, fmt.Sprintf("%s (%s)", p.node, p.kubernetesVersion))
+		}
+	}
+	if len(talosOlder) > 0 {
+		list := truncatedList(talosOlder, preflightMaxNamesInMessages)
+		if target.AllowTalosDowngrade {
+			res.pass("Talos downgrade to %s explicitly allowed for: %s", target.TalosVersion, list)
+		} else {
+			res.fail(reasonDowngrade, "target Talos %s is older than the running version on: %s; set target.allowTalosDowngrade: true to roll back",
+				target.TalosVersion, list)
+		}
+	}
+	if len(k8sOlder) > 0 {
+		res.fail(reasonDowngrade, "target Kubernetes %s is older than the running version on: %s; Kubernetes downgrades are never allowed",
+			target.KubernetesVersion, truncatedList(k8sOlder, preflightMaxNamesInMessages))
+	}
 }
 
 // checkTalosImages verifies the installer image exists for every node that still needs the Talos upgrade.

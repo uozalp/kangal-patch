@@ -2,6 +2,7 @@ package drain
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -19,8 +21,10 @@ import (
 
 func newPod(name string, mutate func(*corev1.Pod)) *corev1.Pod {
 	p := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec:       corev1.PodSpec{NodeName: "n1"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", OwnerReferences: []metav1.OwnerReference{
+			{Kind: "ReplicaSet", Name: "rs", APIVersion: "apps/v1", UID: "u", Controller: ptr.To(true)},
+		}},
+		Spec: corev1.PodSpec{NodeName: "n1"},
 	}
 	if mutate != nil {
 		mutate(p)
@@ -94,6 +98,25 @@ func TestDrainNodeEvictsOnlyWorkloadPods(t *testing.T) {
 	}
 	if podExists(t, d, "app") || !podExists(t, d, "ds") || !podExists(t, d, "static") {
 		t.Fatal("want only the workload pod evicted")
+	}
+}
+
+func TestDrainNodeRefusesUnmanagedPodsUnlessAllowed(t *testing.T) {
+	bare := newPod("bare", func(p *corev1.Pod) { p.OwnerReferences = nil })
+
+	d := newDrainer(t, nil, bare)
+	if _, err := d.DrainNode(context.Background(), "n1", DrainOptions{Timeout: time.Minute}); !errors.Is(err, ErrUnmanagedPods) {
+		t.Fatalf("err = %v, want ErrUnmanagedPods", err)
+	}
+	if !podExists(t, d, "bare") {
+		t.Fatal("bare pod must be left alone")
+	}
+
+	if _, err := d.DrainNode(context.Background(), "n1", DrainOptions{EvictUnmanaged: true, Timeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if podExists(t, d, "bare") {
+		t.Fatal("bare pod should be evicted when allowed")
 	}
 }
 

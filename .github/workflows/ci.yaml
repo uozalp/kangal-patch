@@ -30,7 +30,7 @@ jobs:
       run: make test
 
     - name: Check generated files are committed
-      run: git diff --exit-code
+      run: test -z "$(git status --porcelain)" || { git status --short; exit 1; }
 
   build:
     name: Build

@@ -556,6 +556,7 @@ built-in copy of this table. Talos versions newer than the built-in table are no
 | `retention.history` | duration | How long finished PatchJobs are kept | `168h` |
 | `delayBetweenNodes` | duration | Minimum time between scheduling rounds | `5m` |
 | `respectPDBs` | bool | Respect PodDisruptionBudgets while draining | `true` |
+| `evictUnmanagedPods` | bool | Evict pods without a controller (deleted for good). When `false` the drain refuses and the PatchJob fails | `false` |
 | `drainTimeout` | duration | Maximum time for a node drain | `5m` |
 | `rebootTimeout` | duration | Maximum time for a reboot | `10m` |
 | `kubernetesUpgradeTimeout` | duration | Maximum time for the kubelet and control plane to report the target Kubernetes version | `10m` |
@@ -579,6 +580,7 @@ because a kubelet must never run newer than the control plane it connects to.
 | `installer` | string | Installer type, e.g. `aws`, `nocloud`. Required when `source=factory` | - |
 | `schematicID` | string | Talos Factory schematic ID. If omitted with `source=factory`, each node's running schematic is kept; if set, it becomes the target schematic | - |
 | `secureBoot` | bool | Use the secure boot installer. Only applies with `source=factory` | `false` |
+| `allowTalosDowngrade` | bool | Allow `talosVersion` to be older than a node's running version (rollback). Without it such a plan fails preflight. Not allowed on auto-update templates. Kubernetes downgrades are never allowed | `false` |
 | `autoUpdate.enabled` | bool | Make the plan a `Watching` template that creates child plans instead of patching nodes, see [Auto-update](#auto-update) | - |
 | `autoUpdate.allow` | string | Largest automatic change: `patch` or `minor` | `patch` |
 | `autoUpdate.checkInterval` | duration | How often to check for releases (minimum 1m) | `1h` |

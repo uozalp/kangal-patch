@@ -14,7 +14,6 @@ import (
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
-	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/scheduling"
 )
 
@@ -120,15 +119,14 @@ func (r *PatchPlanReconciler) markInProgress(ctx context.Context, patchPlan *pat
 		return nil
 	}
 
-	original := patchPlan.DeepCopy()
-	patchPlan.Status.Phase = patchv1alpha1.PatchPhaseInProgress
-	if patchPlan.Status.StartTime == nil {
-		patchPlan.Status.StartTime = &metav1.Time{Time: time.Now()}
-	}
-	// Clear completion time if resuming after completion/failure
-	patchPlan.Status.CompletionTime = nil
-
-	return patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
+	return r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+		s.Phase = patchv1alpha1.PatchPhaseInProgress
+		if s.StartTime == nil {
+			s.StartTime = &metav1.Time{Time: time.Now()}
+		}
+		// Clear completion time if resuming after completion/failure
+		s.CompletionTime = nil
+	})
 }
 
 // waitForControlPlane gates worker nodes on a Kubernetes upgrade: every control plane node
@@ -154,12 +152,8 @@ func (r *PatchPlanReconciler) waitForControlPlane(ctx context.Context, patchPlan
 			}
 			// A Failed job never becomes Completed, so say why the workers are not moving.
 			msg := fmt.Sprintf("worker rollout blocked: control plane node %s failed", controlPlane[i].Name)
-			if patchPlan.Status.Message != msg {
-				original := patchPlan.DeepCopy()
-				patchPlan.Status.Message = msg
-				if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
-					return 0, err
-				}
+			if err := r.setMessage(ctx, patchPlan, msg); err != nil {
+				return 0, err
 			}
 			return requeueWhenJobsInProgress, nil
 		}
@@ -196,20 +190,14 @@ func (r *PatchPlanReconciler) ensureKubeProxy(ctx context.Context, patchPlan *pa
 		if time.Since(lastCompletion(controlPlane, jobsByNode)) > timeout {
 			message = fmt.Sprintf("kube-proxy rollout not finished %s after the control plane completed; check the kube-proxy DaemonSet in %s", timeout, kubeProxyNamespace)
 		}
-		if patchPlan.Status.Message != message {
-			original := patchPlan.DeepCopy()
-			patchPlan.Status.Message = message
-			if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
-				return 0, err
-			}
+		if err := r.setMessage(ctx, patchPlan, message); err != nil {
+			return 0, err
 		}
 		log.FromContext(ctx).Info("waiting for kube-proxy rollout")
 		return requeueForNextNode, nil
 	}
 
-	original := patchPlan.DeepCopy()
-	patchPlan.Status.KubeProxyUpgraded = true
-	return 0, patchutil.PatchStatus(ctx, r.Status(), original, patchPlan)
+	return 0, r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) { s.KubeProxyUpgraded = true })
 }
 
 // lastCompletion is the latest completion time of the nodes' jobs.
@@ -263,10 +251,10 @@ func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *pat
 		return err
 	}
 
-	original := patchPlan.DeepCopy()
-	patchPlan.Status.LastNodeScheduledAt = &metav1.Time{Time: time.Now()}
-	patchPlan.Status.Message = fmt.Sprintf("Patching node %s (group %s)", node.Name, group)
-	if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+	if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+		s.LastNodeScheduledAt = &metav1.Time{Time: time.Now()}
+		s.Message = fmt.Sprintf("Patching node %s (group %s)", node.Name, group)
+	}); err != nil {
 		logger.Error(err, "unable to update PatchPlan status")
 		return err
 	}
@@ -280,18 +268,17 @@ func (r *PatchPlanReconciler) createPatchJob(ctx context.Context, patchPlan *pat
 func (r *PatchPlanReconciler) failInvalidStrategy(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan, cause error) (ctrl.Result, error) {
 	log.FromContext(ctx).Info("invalid groups or strategy", "error", cause.Error())
 
-	original := patchPlan.DeepCopy()
-	meta.SetStatusCondition(&patchPlan.Status.Conditions, metav1.Condition{
-		Type:               patchv1alpha1.ConditionPreflightPassed,
-		Status:             metav1.ConditionFalse,
-		Reason:             reasonInvalidStrategy,
-		Message:            cause.Error(),
-		ObservedGeneration: patchPlan.Generation,
-	})
-	patchPlan.Status.Phase = patchv1alpha1.PatchPhaseFailed
-	patchPlan.Status.Message = "Invalid strategy: " + cause.Error()
-
-	if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
+	if err := r.updateStatus(ctx, patchPlan, func(s *patchv1alpha1.PatchPlanStatus) {
+		meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+			Type:               patchv1alpha1.ConditionPreflightPassed,
+			Status:             metav1.ConditionFalse,
+			Reason:             reasonInvalidStrategy,
+			Message:            cause.Error(),
+			ObservedGeneration: patchPlan.Generation,
+		})
+		s.Phase = patchv1alpha1.PatchPhaseFailed
+		s.Message = "Invalid strategy: " + cause.Error()
+	}); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueWhenPreflightFailed}, nil

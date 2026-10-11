@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sync"
 	"time"
@@ -73,7 +74,6 @@ const (
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 const kubeSystemNamespace = "kube-system"
 
@@ -165,9 +165,25 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 
 		talosNeedsUpgrade := targetTalosVersion != "" && currentTalosVersion != targetTalosVersion
 		kubernetesNeedsUpgrade := targetKubernetesVersion != "" && currentKubernetesVersion != targetKubernetesVersion
-
+		// A kubelet at target does not prove the control plane static pods rolled out (e.g. a retried job)
+		if targetKubernetesVersion != "" && !kubernetesNeedsUpgrade && nodeutil.IsControlPlane(node) {
+			ready, err := r.controlPlaneStaticPodsReady(ctx, node.Name, targetKubernetesVersion)
+			if err != nil {
+				return r.retryOrFail(ctx, original, patchJob, "failed to check control plane static pods", err)
+			}
+			kubernetesNeedsUpgrade = !ready
+		}
 		patchJob.Status.CurrentTalosVersion = currentTalosVersion
 		patchJob.Status.CurrentKubernetesVersion = currentKubernetesVersion
+
+		if talosNeedsUpgrade && !patchJob.Spec.Target.AllowTalosDowngrade && isDowngrade(currentTalosVersion, targetTalosVersion) {
+			return r.failJob(ctx, original, patchJob, "refusing to downgrade Talos",
+				fmt.Errorf("node runs %s, target is older (%s); set target.allowTalosDowngrade to roll back", currentTalosVersion, targetTalosVersion))
+		}
+		if targetKubernetesVersion != "" && isDowngrade(currentKubernetesVersion, targetKubernetesVersion) {
+			return r.failJob(ctx, original, patchJob, "refusing to downgrade Kubernetes",
+				fmt.Errorf("kubelet runs %s, target is older (%s)", currentKubernetesVersion, targetKubernetesVersion))
+		}
 		// Display the requested target, or the current value if that dimension isn't being changed
 		patchJob.Status.TargetTalosVersion = firstNonEmpty(targetTalosVersion, currentTalosVersion)
 		patchJob.Status.TargetKubernetesVersion = firstNonEmpty(targetKubernetesVersion, currentKubernetesVersion)
@@ -242,10 +258,18 @@ func (r *PatchJobReconciler) retryOrFail(ctx context.Context, original, modified
 	return ctrl.Result{}, fmt.Errorf("%s (will retry): %w", message, err)
 }
 
-// failJob transitions a PatchJob to failed state and updates status
+// failJob transitions a PatchJob to failed state and updates status. Before the reboot the node still
+// runs the old version, so the cordon is released; after it the node is left cordoned for inspection.
 func (r *PatchJobReconciler) failJob(ctx context.Context, original, modified *patchv1alpha1.PatchJob, message string, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, message)
+
+	switch original.Status.Phase {
+	case patchv1alpha1.PatchJobPhasePending, patchv1alpha1.PatchJobPhaseDraining, patchv1alpha1.PatchJobPhaseUpgrading:
+		if uerr := drain.NewDrainer(r.Client).UncordonNode(ctx, modified.Spec.NodeName); uerr != nil {
+			logger.Error(uerr, "failed to uncordon node after failure", "node", modified.Spec.NodeName)
+		}
+	}
 
 	modified.Status.Phase = patchv1alpha1.PatchJobPhaseFailed
 	modified.Status.Message = fmt.Sprintf("%s: %v", message, err)
@@ -256,14 +280,6 @@ func (r *PatchJobReconciler) failJob(ctx context.Context, original, modified *pa
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// failDrain fails a job whose drain timed out and releases the cordon: the node still runs the old version.
-func (r *PatchJobReconciler) failDrain(ctx context.Context, original, patchJob *patchv1alpha1.PatchJob, cause error) (ctrl.Result, error) {
-	if err := drain.NewDrainer(r.Client).UncordonNode(ctx, patchJob.Spec.NodeName); err != nil {
-		log.FromContext(ctx).Error(err, "failed to uncordon node after drain timeout", "node", patchJob.Spec.NodeName)
-	}
-	return r.failJob(ctx, original, patchJob, "drain timed out", cause)
 }
 
 // patchStatus applies a status patch to the PatchJob, only updating changed fields.
@@ -360,8 +376,9 @@ func (r *PatchJobReconciler) startDrain(ctx context.Context, patchJob *patchv1al
 
 	// Start drain operation
 	drainOpts := drain.DrainOptions{
-		RespectPDBs: patchPlan.Spec.RespectPDBs,
-		Timeout:     drainTimeout(patchPlan),
+		RespectPDBs:    patchPlan.Spec.RespectPDBs,
+		EvictUnmanaged: patchPlan.Spec.EvictUnmanagedPods,
+		Timeout:        drainTimeout(patchPlan),
 	}
 
 	if patchJob.Status.DrainStartTime == nil {
@@ -369,6 +386,9 @@ func (r *PatchJobReconciler) startDrain(ctx context.Context, patchJob *patchv1al
 	}
 
 	blocked, err := drainer.DrainNode(ctx, patchJob.Spec.NodeName, drainOpts)
+	if stderrors.Is(err, drain.ErrUnmanagedPods) {
+		return r.failJob(ctx, original, patchJob, "drain refused", err)
+	}
 	if err != nil {
 		return r.retryOrFail(ctx, original, patchJob, "failed to drain node", err)
 	}
@@ -376,7 +396,7 @@ func (r *PatchJobReconciler) startDrain(ctx context.Context, patchJob *patchv1al
 	if blocked {
 		// Stay Pending and retry; only fail once drainTimeout has elapsed since the first attempt.
 		if time.Since(patchJob.Status.DrainStartTime.Time) > drainOpts.Timeout {
-			return r.failDrain(ctx, original, patchJob,
+			return r.failJob(ctx, original, patchJob, "drain timed out",
 				fmt.Errorf("pods still blocked by PodDisruptionBudgets after %s", drainOpts.Timeout))
 		}
 		patchJob.Status.Message = "drain blocked by PodDisruptionBudget, retrying"
@@ -420,7 +440,7 @@ func (r *PatchJobReconciler) waitForDrain(ctx context.Context, patchJob *patchv1
 		}
 		timeout := drainTimeout(patchPlan)
 		if start := patchJob.Status.DrainStartTime; start != nil && time.Since(start.Time) > timeout {
-			return r.failDrain(ctx, original, patchJob,
+			return r.failJob(ctx, original, patchJob, "drain timed out",
 				fmt.Errorf("pods still on node after %s", timeout))
 		}
 		logger.Info("node still draining", "node", patchJob.Spec.NodeName)
