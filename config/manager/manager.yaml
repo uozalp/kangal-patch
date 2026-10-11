@@ -32,7 +32,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: manager
-        image: ghcr.io/uozalp/kangal-patch:0.1.2
+        image: ghcr.io/uozalp/kangal-patch:0.2.0
         imagePullPolicy: IfNotPresent
         command:
         - /manager
