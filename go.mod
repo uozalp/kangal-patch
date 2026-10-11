@@ -4,10 +4,11 @@ go 1.26.5
 
 require (
 	github.com/cosi-project/runtime v1.16.3
-	github.com/siderolabs/talos/pkg/machinery v1.14.1
+	github.com/siderolabs/talos/pkg/machinery v1.14.2
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.0
+	k8s.io/utils v0.0.0-20260626114624-be93311217bd
 	sigs.k8s.io/controller-runtime v0.25.2
 )
 
@@ -111,7 +112,6 @@ require (
 	k8s.io/apiextensions-apiserver v0.37.0 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
-	k8s.io/utils v0.0.0-20260626114624-be93311217bd // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
