@@ -27,6 +27,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	cp config/crd/bases/*.yaml helm/kangal-patch/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -96,7 +97,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
-CONTROLLER_TOOLS_VERSION ?= latest
+CONTROLLER_TOOLS_VERSION ?= v0.19.0
 # keep in sync with .github/workflows/ci.yaml's golangci-lint version
 GOLANGCI_LINT_VERSION ?= v2.13.2
 

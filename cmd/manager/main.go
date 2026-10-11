@@ -1,19 +1,24 @@
 package main
 
 import (
-	"context"
 	"flag"
+	"net/http"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -21,6 +26,7 @@ import (
 
 	kangalpatchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/controllers"
+	"github.com/uozalp/kangal-patch/internal/release"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -44,15 +50,26 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	operatorNamespace := os.Getenv("POD_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = "default"
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                        scheme,
+		Scheme: scheme,
+		// Leases are only used in the operator namespace; node heartbeat Leases must not be cached.
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&coordinationv1.Lease{}: {Namespaces: map[string]cache.Config{operatorNamespace: {}}},
+		}},
+		// Secrets, the kube-proxy DaemonSet and per-node Pod lists (server-side spec.nodeName selector) bypass the cache so it holds no cluster-wide Pods/Secrets.
+		Client:                        client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}, &appsv1.DaemonSet{}, &corev1.Pod{}}}},
 		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:        probeAddr,
 		LeaderElection:                enableLeaderElection,
@@ -64,24 +81,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup field indexer for pod node name (used by drain functionality)
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(rawObj client.Object) []string {
-		pod := rawObj.(*corev1.Pod)
-		return []string{pod.Spec.NodeName}
-	}); err != nil {
-		setupLog.Error(err, "unable to create field index for pod nodeName")
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create discovery client")
 		os.Exit(1)
-	}
-
-	operatorNamespace := os.Getenv("POD_NAMESPACE")
-	if operatorNamespace == "" {
-		operatorNamespace = "default"
 	}
 
 	if err = (&controllers.PatchPlanReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,
+		Discovery: discoveryClient,
+		Releases:  &release.Fetcher{HTTPClient: &http.Client{Timeout: 30 * time.Second}},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PatchPlan")
 		os.Exit(1)

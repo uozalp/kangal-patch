@@ -7,13 +7,6 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
   - nodes
   verbs:
   - get
@@ -37,25 +30,15 @@ rules:
   verbs:
   - create
 - apiGroups:
-  - ""
+  - apps
+  resourceNames:
+  - kube-proxy
   resources:
-  - secrets
+  - daemonsets
   verbs:
   - get
-  - list
-  - watch
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - create
-  - delete
-  - get
-  - list
   - patch
   - update
-  - watch
 - apiGroups:
   - kangalpatch.ozalp.dk
   resources:
@@ -78,9 +61,35 @@ rules:
   - get
   - patch
   - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-role
+  namespace: kangal-patch
+rules:
 - apiGroups:
-  - kangalpatch.ozalp.dk
+  - ""
   resources:
-  - patchplans/finalizers
+  - events
   verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
   - update
+  - watch
