@@ -84,6 +84,7 @@ func (r *PatchJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var patchJob patchv1alpha1.PatchJob
 	if err := r.Get(ctx, req.NamespacedName, &patchJob); err != nil {
 		if errors.IsNotFound(err) {
+			r.transientSince.Delete(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "unable to fetch PatchJob")
