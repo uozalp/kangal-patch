@@ -346,7 +346,7 @@ func (r *PatchPlanReconciler) checkTalosNodes(ctx context.Context, patchPlan *pa
 	res.pass("Talos credentials accepted by endpoints %s", strings.Join(patchPlan.Spec.TalosConfig.Endpoints, ", "))
 
 	target := patchPlan.Spec.Target
-	needSchematic := target.TalosVersion != "" && target.Source == "factory" && target.SchematicID == ""
+	needSchematic := target.TalosVersion != "" && target.Source == "factory"
 
 	type outcome struct {
 		probe nodeProbe
@@ -449,7 +449,7 @@ func checkTalosImages(ctx context.Context, target patchv1alpha1.TargetSpec, prob
 	images := map[string][]string{}
 	invalid := false
 	for _, p := range probes {
-		if p.version == target.TalosVersion {
+		if !needsTalosUpgrade(target, p.version, p.schematicID) {
 			continue
 		}
 		image, err := patchutil.BuildInstallerImage(target, p.schematicID)

@@ -51,13 +51,14 @@ func TestRetryOrFailRetriesUntilDeadline(t *testing.T) {
 
 type fakeTalos struct {
 	version       string
+	schematic     string
 	upgradeImages []string
 	upgradeErr    error
 }
 
 func (f *fakeTalos) GetVersion(context.Context, string) (string, error) { return f.version, nil }
 func (f *fakeTalos) GetSchematicID(context.Context, string) (string, error) {
-	return "", nil
+	return f.schematic, nil
 }
 func (f *fakeTalos) Upgrade(_ context.Context, _, image string) error {
 	f.upgradeImages = append(f.upgradeImages, image)
@@ -211,6 +212,30 @@ func TestPatchJobWalksPendingToCompleted(t *testing.T) {
 	}
 	if h.job().Status.CompletionTime == nil {
 		t.Fatal("CompletionTime not set")
+	}
+}
+
+func TestPatchJobSchematicChangeAtSameVersionUpgrades(t *testing.T) {
+	const want = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+	tests := []struct {
+		name      string
+		schematic string
+		wantPhase patchv1alpha1.PatchJobPhase
+	}{
+		{"other schematic", "a1a1", patchv1alpha1.PatchJobPhasePending},
+		{"same schematic", want, patchv1alpha1.PatchJobPhaseCompleted},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newJobHarness(t, "v1.11.0")
+			h.talos.schematic = tc.schematic
+			j := h.job()
+			j.Spec.Target = patchv1alpha1.TargetSpec{TalosVersion: "v1.11.0", Source: "factory", Installer: "metal", SchematicID: want}
+			if err := h.r.Update(context.Background(), j); err != nil {
+				t.Fatal(err)
+			}
+			h.wantPhase(h.step(), tc.wantPhase)
+		})
 	}
 }
 

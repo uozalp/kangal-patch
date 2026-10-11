@@ -163,7 +163,14 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 		targetTalosVersion := patchJob.Spec.Target.TalosVersion
 		targetKubernetesVersion := patchJob.Spec.Target.KubernetesVersion
 
-		talosNeedsUpgrade := targetTalosVersion != "" && currentTalosVersion != targetTalosVersion
+		nodeSchematicID := ""
+		if checksSchematic(patchJob.Spec.Target) {
+			if nodeSchematicID, err = talosClient.GetSchematicID(ctx, nodeAddr); err != nil {
+				return r.retryOrFail(ctx, original, patchJob, "failed to detect node schematic ID", err)
+			}
+		}
+
+		talosNeedsUpgrade := needsTalosUpgrade(patchJob.Spec.Target, currentTalosVersion, nodeSchematicID)
 		kubernetesNeedsUpgrade := targetKubernetesVersion != "" && currentKubernetesVersion != targetKubernetesVersion
 		// A kubelet at target does not prove the control plane static pods rolled out (e.g. a retried job)
 		if targetKubernetesVersion != "" && !kubernetesNeedsUpgrade && nodeutil.IsControlPlane(node) {
@@ -237,6 +244,20 @@ func (r *PatchJobReconciler) initJob(ctx context.Context, patchJob *patchv1alpha
 
 		return ctrl.Result{RequeueAfter: requeueImmediate}, nil
 	})
+}
+
+// checksSchematic reports whether the target pins a factory schematic the node must run.
+func checksSchematic(t patchv1alpha1.TargetSpec) bool {
+	return t.Source == "factory" && t.SchematicID != ""
+}
+
+// needsTalosUpgrade reports whether a node must be upgraded: it runs another Talos version, or
+// another schematic than the one the target pins.
+func needsTalosUpgrade(t patchv1alpha1.TargetSpec, version, schematicID string) bool {
+	if t.TalosVersion == "" {
+		return false
+	}
+	return version != t.TalosVersion || (checksSchematic(t) && schematicID != t.SchematicID)
 }
 
 // firstNonEmpty returns a if it is non-empty, otherwise b.
