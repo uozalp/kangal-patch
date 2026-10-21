@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cosi-project/runtime v1.16.3
-	github.com/siderolabs/talos/pkg/machinery v1.14.2
+	github.com/siderolabs/talos/pkg/machinery v1.14.4
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
