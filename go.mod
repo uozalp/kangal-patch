@@ -3,7 +3,7 @@ module github.com/uozalp/kangal-patch
 go 1.26.5
 
 require (
-	github.com/cosi-project/runtime v1.16.4
+	github.com/cosi-project/runtime v1.17.0
 	github.com/siderolabs/talos/pkg/machinery v1.14.5
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
