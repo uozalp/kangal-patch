@@ -173,7 +173,7 @@ func (c *Client) PatchKubeletVersion(ctx context.Context, nodeName, kubeletImage
 }
 
 func kubeletPatch(kubeletImage string) string {
-	return fmt.Sprintf(`[{"op": "add", "path": "/machine/kubelet/image", "value": %q}]`, kubeletImage)
+	return fmt.Sprintf("machine:\n  kubelet:\n    image: %q\n", kubeletImage)
 }
 
 // PatchControlPlaneVersion patches the kube-apiserver, kube-controller-manager and kube-scheduler
@@ -184,17 +184,13 @@ func (c *Client) PatchControlPlaneVersion(ctx context.Context, nodeName, apiServ
 }
 
 func controlPlanePatch(apiServerImage, controllerManagerImage, schedulerImage string) string {
-	return fmt.Sprintf(`[
-		{"op": "add", "path": "/cluster/apiServer/image", "value": %q},
-		{"op": "add", "path": "/cluster/controllerManager/image", "value": %q},
-		{"op": "add", "path": "/cluster/scheduler/image", "value": %q}
-	]`, apiServerImage, controllerManagerImage, schedulerImage)
+	return fmt.Sprintf("cluster:\n  apiServer:\n    image: %q\n  controllerManager:\n    image: %q\n  scheduler:\n    image: %q\n",
+		apiServerImage, controllerManagerImage, schedulerImage)
 }
 
-// patchMachineConfig applies a JSON6902 patch to a node's machine config without a reboot. It
-// assumes the patched fields' parent objects (e.g. machine.kubelet, cluster.apiServer) already
-// exist in the node's config, which is the case for any config generated with `talosctl gen config`.
-func (c *Client) patchMachineConfig(ctx context.Context, nodeName, jsonPatch string) error {
+// patchMachineConfig applies a strategic merge patch to a node's machine config without a reboot.
+// Strategic merge (unlike JSON6902) also works on multi-document machine configs.
+func (c *Client) patchMachineConfig(ctx context.Context, nodeName, patch string) error {
 	if c.client == nil {
 		return fmt.Errorf("client not initialized")
 	}
@@ -217,7 +213,7 @@ func (c *Client) patchMachineConfig(ctx context.Context, nodeName, jsonPatch str
 		return fmt.Errorf("failed to read machine config from node %s: %w", nodeName, err)
 	}
 
-	patches, err := configpatcher.LoadPatches([]string{jsonPatch})
+	patches, err := configpatcher.LoadPatches([]string{patch})
 	if err != nil {
 		return fmt.Errorf("failed to load config patch: %w", err)
 	}

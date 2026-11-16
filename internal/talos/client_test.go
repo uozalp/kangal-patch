@@ -40,20 +40,29 @@ cluster:
     image: registry.k8s.io/kube-scheduler:v1.32.0
 `
 
+const multiDocConfig = sampleConfig + `---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: stable
+`
+
 func TestKubernetesPatchesApplyToMachineConfig(t *testing.T) {
 	for name, tc := range map[string]struct {
-		patch string
-		want  []string
+		config string
+		patch  string
+		want   []string
 	}{
-		"kubelet":       {kubeletPatch("ghcr.io/siderolabs/kubelet:v1.33.0"), []string{"kubelet:v1.33.0"}},
-		"control plane": {controlPlanePatch("a:v1.33.0", "cm:v1.33.0", "s:v1.33.0"), []string{"a:v1.33.0", "cm:v1.33.0", "s:v1.33.0"}},
+		"kubelet":                 {sampleConfig, kubeletPatch("ghcr.io/siderolabs/kubelet:v1.33.0"), []string{"kubelet:v1.33.0"}},
+		"control plane":           {sampleConfig, controlPlanePatch("a:v1.33.0", "cm:v1.33.0", "s:v1.33.0"), []string{"a:v1.33.0", "cm:v1.33.0", "s:v1.33.0"}},
+		"kubelet multi-doc":       {multiDocConfig, kubeletPatch("ghcr.io/siderolabs/kubelet:v1.33.0"), []string{"kubelet:v1.33.0", "HostnameConfig"}},
+		"control plane multi-doc": {multiDocConfig, controlPlanePatch("a:v1.33.0", "cm:v1.33.0", "s:v1.33.0"), []string{"a:v1.33.0", "cm:v1.33.0", "s:v1.33.0", "HostnameConfig"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			patches, err := configpatcher.LoadPatches([]string{tc.patch})
 			if err != nil {
 				t.Fatal(err)
 			}
-			out, err := configpatcher.Apply(configpatcher.WithBytes([]byte(sampleConfig)), patches)
+			out, err := configpatcher.Apply(configpatcher.WithBytes([]byte(tc.config)), patches)
 			if err != nil {
 				t.Fatal(err)
 			}
