@@ -16,7 +16,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/maintenance"
@@ -249,10 +251,19 @@ func (r *PatchPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&patchv1alpha1.PatchPlan{}).
-		Owns(&patchv1alpha1.PatchPlan{}). // child plans wake their auto-update template
+		Watches(&patchv1alpha1.PatchPlan{}, handler.EnqueueRequestsFromMapFunc(parentPlanRequest)). // child plans wake their auto-update template
 		Owns(&patchv1alpha1.PatchJob{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
+}
+
+// parentPlanRequest maps a child PatchPlan to the auto-update template that created it.
+func parentPlanRequest(_ context.Context, obj client.Object) []reconcile.Request {
+	parent := obj.GetLabels()[patchv1alpha1.LabelParentPlan]
+	if parent == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: parent}}}
 }
 
 // newFailures is the number of failed nodes the user has not yet accepted by resuming the plan.

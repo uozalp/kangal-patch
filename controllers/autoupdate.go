@@ -227,8 +227,9 @@ func (r *PatchPlanReconciler) lowestTalosVersion(ctx context.Context, patchPlan 
 	return lowest, nil
 }
 
-// createChildPlan creates the PatchPlan that rolls out version. It reports false if the plan
-// already exists. A non-nil approvalMessage is the Slack release message, in whose thread the
+// createChildPlan creates the PatchPlan that rolls out version. The child deliberately has no owner
+// reference, so deleting the template leaves its plans and their PatchJobs in place. It reports
+// false if the plan already exists. A non-nil approvalMessage is the Slack release message, in whose thread the
 // plan reports its progress.
 func (r *PatchPlanReconciler) createChildPlan(ctx context.Context, parent *patchv1alpha1.PatchPlan, version string, approvalMessage *patchv1alpha1.SlackMessageRef) (string, bool, error) {
 	child := &patchv1alpha1.PatchPlan{
@@ -248,10 +249,6 @@ func (r *PatchPlanReconciler) createChildPlan(ctx context.Context, parent *patch
 	child.Spec.Target.TalosVersion = version
 	child.Spec.Paused = false
 	child.Spec.Cancelled = false
-
-	if err := ctrl.SetControllerReference(parent, child, r.Scheme); err != nil {
-		return "", false, err
-	}
 
 	if err := r.Create(ctx, child); err != nil {
 		if errors.IsAlreadyExists(err) {

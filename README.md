@@ -468,7 +468,7 @@ spec:
   moves within the current minor; `allow: minor` also steps to the next minor, never skipping one.
 - Only stable GitHub releases are considered, and a release must be at least `minReleaseAge` old.
 - No new child is created while an earlier child is not `Completed` (including `Failed`); delete or
-  fix it to resume. Children are garbage-collected with the template.
+  fix it to resume. Children are independent plans: deleting the template does not delete them.
 - `talosVersion` and `kubernetesVersion` must be omitted on a template. Releases are read
   anonymously from the GitHub API.
 - `status.autoUpdate` shows the last check, the current, latest and pending (too young) versions,
