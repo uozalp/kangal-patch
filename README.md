@@ -534,6 +534,14 @@ become spaces, first letter capitalized); fields are sorted by label, at most 7 
 characters and shown as plain text. A message is re-rendered when its approval changes, so a changed annotation shows
 up with the next vote or state change.
 
+**Rollout status.** Once a release is approved, the child PatchPlan reports its progress as a reply in the thread of the
+release message. It is a single message with a table of the nodes (group, phase, time) that is edited as nodes move
+through Draining, Upgrading, Rebooting and so on, and that turns into the summary (result and duration) when the plan
+finishes. Nodes that have not started yet show as Pending. A node that fails gets a new reply (once per node), which
+also says "Halted, manual action needed" when the failure policy stopped the rollout. The operator keeps the message
+locations in annotations of the child plan (`kangalpatch.ozalp.dk/slack-*`), next to the channel and thread it was
+given when it was created.
+
 Notes:
 
 - A plan with `approval.slack.enabled` stays in `Watching` with an explanatory message and never upgrades while

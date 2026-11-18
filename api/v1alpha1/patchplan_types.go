@@ -577,6 +577,19 @@ const LabelParentPlan = "kangalpatch.ozalp.dk/parent"
 // "Environment: Production".
 const AnnotationSlackFieldPrefix = "slack.kangalpatch.ozalp.dk/"
 
+// Annotations set on a child PatchPlan whose release was approved in Slack. They locate the release
+// message; the rollout status is posted as a reply in its thread. The operator keeps the status
+// message in annotations, not in status, so that it is never lost to a pruned CRD field and a
+// message is never posted twice: AnnotationSlackStatusTS is the message, AnnotationSlackStatusKey
+// what it shows and AnnotationSlackFailures the failed nodes already announced.
+const (
+	AnnotationSlackChannel   = "kangalpatch.ozalp.dk/slack-channel"
+	AnnotationSlackThread    = "kangalpatch.ozalp.dk/slack-thread"
+	AnnotationSlackStatusTS  = "kangalpatch.ozalp.dk/slack-status-ts"
+	AnnotationSlackStatusKey = "kangalpatch.ozalp.dk/slack-status-key"
+	AnnotationSlackFailures  = "kangalpatch.ozalp.dk/slack-failures"
+)
+
 // Labels set on the PatchJobs and Leases a PatchPlan creates. A Lease is the concurrency slot of
 // one active PatchJob, so counting Leases by plan and group gives the live concurrency.
 const (

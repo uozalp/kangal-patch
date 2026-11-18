@@ -94,8 +94,22 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.reconcileAutoUpdate(ctx, &patchPlan)
 	}
 
+	result, err := r.reconcileRollout(ctx, &patchPlan)
+	if reportErr := r.reportRollout(ctx, &patchPlan); reportErr != nil {
+		logger.Info("Slack rollout report failed", "error", reportErr.Error())
+		if result.RequeueAfter == 0 || result.RequeueAfter > requeueSlackRetry {
+			result.RequeueAfter = requeueSlackRetry
+		}
+	}
+	return result, err
+}
+
+// reconcileRollout schedules the nodes of a PatchPlan that rolls out a version.
+func (r *PatchPlanReconciler) reconcileRollout(ctx context.Context, patchPlan *patchv1alpha1.PatchPlan) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
 	// Once finished history is purged the plan is frozen and must not schedule anything again
-	purged, err := r.applyRetention(ctx, &patchPlan)
+	purged, err := r.applyRetention(ctx, patchPlan)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -110,7 +124,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	rollout, err := scheduling.Resolve(nodes, patchPlan.Spec)
 	if err != nil {
-		return r.failInvalidStrategy(ctx, &patchPlan, err)
+		return r.failInvalidStrategy(ctx, patchPlan, err)
 	}
 
 	// Get list of existing PatchJobs
@@ -125,36 +139,36 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Leases are the source of truth for concurrency: release finished jobs, heal missing ones
-	activeLeases, err := r.syncLeases(ctx, &patchPlan, rollout, jobs)
+	activeLeases, err := r.syncLeases(ctx, patchPlan, rollout, jobs)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Update status counts and total nodes
 	original := patchPlan.DeepCopy()
-	jobSummary := summarize(&patchPlan, rollout, jobsByNode, activeLeases)
+	jobSummary := summarize(patchPlan, rollout, jobsByNode, activeLeases)
 	// Deleting accepted failed jobs (to retry them) must not leave a credit for future failures
 	patchPlan.Status.FailuresAcknowledged = min(patchPlan.Status.FailuresAcknowledged, jobSummary.Failed)
 	patchPlan.Status.TargetTalosVersion = patchPlan.Spec.Target.TalosVersion
 	patchPlan.Status.TargetKubernetesVersion = patchPlan.Spec.Target.KubernetesVersion
 
 	if !equality.Semantic.DeepEqual(original.Status, patchPlan.Status) {
-		if err := patchutil.PatchStatus(ctx, r.Status(), original, &patchPlan); err != nil {
+		if err := patchutil.PatchStatus(ctx, r.Status(), original, patchPlan); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Handle cancellation - takes priority over pause and stops the reconciler for good
-	cancelled, err := r.ensureCancelledState(ctx, &patchPlan)
+	cancelled, err := r.ensureCancelledState(ctx, patchPlan)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if cancelled {
-		return terminalResult(&patchPlan), nil
+		return terminalResult(patchPlan), nil
 	}
 
 	// Handle pause/resume state
-	paused, err := r.ensurePauseState(ctx, &patchPlan, jobSummary.Failed)
+	paused, err := r.ensurePauseState(ctx, patchPlan, jobSummary.Failed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -163,7 +177,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Validate the plan once before any PatchJob exists; nothing is scheduled until it passes
-	preflightPassed, err := r.ensurePreflight(ctx, &patchPlan, rollout, jobsByNode)
+	preflightPassed, err := r.ensurePreflight(ctx, patchPlan, rollout, jobsByNode)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -172,28 +186,28 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Must precede the completion check: a control-plane-only plan finishes with its last job
-	if wait, err := r.ensureKubeProxy(ctx, &patchPlan, rollout, jobsByNode); err != nil {
+	if wait, err := r.ensureKubeProxy(ctx, patchPlan, rollout, jobsByNode); err != nil {
 		return ctrl.Result{}, err
 	} else if wait > 0 {
 		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
 	// Must precede the completion check: a failed last node must not turn the plan Completed
-	failureBudgetExceeded, err := r.failureBudgetExceeded(ctx, &patchPlan, jobSummary.Failed)
+	failureBudgetExceeded, err := r.failureBudgetExceeded(ctx, patchPlan, jobSummary.Failed)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if failureBudgetExceeded {
-		return terminalResult(&patchPlan), nil
+		return terminalResult(patchPlan), nil
 	}
 
 	// Check if all nodes are processed
-	allProcessed, err := r.allNodesProcessed(ctx, &patchPlan, jobSummary, rollout.Total())
+	allProcessed, err := r.allNodesProcessed(ctx, patchPlan, jobSummary, rollout.Total())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if allProcessed {
-		return terminalResult(&patchPlan), nil
+		return terminalResult(patchPlan), nil
 	}
 
 	// Check maintenance window
@@ -204,12 +218,12 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		nextWindow, err := maintenance.NextMaintenanceWindow(patchPlan.Spec.Maintenance, time.Now())
 		if err != nil {
 			logger.Info("unable to determine next maintenance window", "error", err.Error())
-			if err := r.setMessage(ctx, &patchPlan, fmt.Sprintf("Outside maintenance window and no window found: %v", err)); err != nil {
+			if err := r.setMessage(ctx, patchPlan, fmt.Sprintf("Outside maintenance window and no window found: %v", err)); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: 15 * time.Minute}, nil
 		}
-		if err := r.setMessage(ctx, &patchPlan, "Waiting for maintenance window opening at "+nextWindow.UTC().Format(time.RFC3339)); err != nil {
+		if err := r.setMessage(ctx, patchPlan, "Waiting for maintenance window opening at "+nextWindow.UTC().Format(time.RFC3339)); err != nil {
 			return ctrl.Result{}, err
 		}
 		requeueDuration := max(time.Until(nextWindow), time.Second) // <= 0 would mean no requeue at all
@@ -217,7 +231,7 @@ func (r *PatchPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: requeueDuration}, nil
 	}
 
-	return r.scheduleNodes(ctx, &patchPlan, rollout, jobsByNode, activeLeases)
+	return r.scheduleNodes(ctx, patchPlan, rollout, jobsByNode, activeLeases)
 }
 
 // SetupWithManager sets up the controller with the Manager

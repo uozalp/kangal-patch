@@ -119,7 +119,7 @@ func TestCreateChildPlanIsIdempotentAndClearsAutoUpdate(t *testing.T) {
 	parent.Spec.Paused = true
 	r := testReconciler(t, parent)
 
-	name, created, err := r.createChildPlan(ctx, parent, "v1.13.5")
+	name, created, err := r.createChildPlan(ctx, parent, "v1.13.5", nil)
 	if err != nil || !created || name != "auto-v1.13.5" {
 		t.Fatalf("name=%s created=%t err=%v", name, created, err)
 	}
@@ -134,7 +134,7 @@ func TestCreateChildPlanIsIdempotentAndClearsAutoUpdate(t *testing.T) {
 		t.Fatalf("child labels = %v", child.Labels)
 	}
 
-	if _, created, err := r.createChildPlan(ctx, parent, "v1.13.5"); err != nil || created {
+	if _, created, err := r.createChildPlan(ctx, parent, "v1.13.5", nil); err != nil || created {
 		t.Fatalf("created=%t err=%v, want the existing plan reported", created, err)
 	}
 }

@@ -80,7 +80,7 @@ func (r *PatchPlanReconciler) syncApproval(ctx context.Context, plan *patchv1alp
 
 	var created string
 	if cur = currentApproval(plan); apply && cur != nil && cur.State == patchv1alpha1.ApprovalApproved && !cur.Applied {
-		name, _, err := r.createChildPlan(ctx, plan, cur.Version)
+		name, _, err := r.createChildPlan(ctx, plan, cur.Version, cur.Slack)
 		if err != nil {
 			return "", err
 		}

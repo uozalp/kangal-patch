@@ -140,7 +140,7 @@ func (r *PatchPlanReconciler) reconcileAutoUpdate(ctx context.Context, patchPlan
 		message = fmt.Sprintf("Talos %s awaits approval in Slack", result.Target.Version)
 	case result.Target != nil:
 		version := result.Target.Version.String()
-		name, created, err := r.createChildPlan(ctx, patchPlan, version)
+		name, created, err := r.createChildPlan(ctx, patchPlan, version, nil)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -228,14 +228,21 @@ func (r *PatchPlanReconciler) lowestTalosVersion(ctx context.Context, patchPlan 
 }
 
 // createChildPlan creates the PatchPlan that rolls out version. It reports false if the plan
-// already exists.
-func (r *PatchPlanReconciler) createChildPlan(ctx context.Context, parent *patchv1alpha1.PatchPlan, version string) (string, bool, error) {
+// already exists. A non-nil approvalMessage is the Slack release message, in whose thread the
+// plan reports its progress.
+func (r *PatchPlanReconciler) createChildPlan(ctx context.Context, parent *patchv1alpha1.PatchPlan, version string, approvalMessage *patchv1alpha1.SlackMessageRef) (string, bool, error) {
 	child := &patchv1alpha1.PatchPlan{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   fmt.Sprintf("%s-%s", parent.Name, version),
 			Labels: map[string]string{patchv1alpha1.LabelParentPlan: parent.Name},
 		},
 		Spec: *parent.Spec.DeepCopy(),
+	}
+	if approvalMessage != nil && approvalMessage.MessageTS != "" {
+		child.Annotations = map[string]string{
+			patchv1alpha1.AnnotationSlackChannel: approvalMessage.ChannelID,
+			patchv1alpha1.AnnotationSlackThread:  approvalMessage.MessageTS,
+		}
 	}
 	child.Spec.Target.AutoUpdate = nil
 	child.Spec.Target.TalosVersion = version

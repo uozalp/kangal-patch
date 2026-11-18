@@ -8,15 +8,37 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	patchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/internal/release"
+	"github.com/uozalp/kangal-patch/internal/rollout"
 	"github.com/uozalp/kangal-patch/internal/slack"
 )
 
 type fakeNotifier struct {
 	posts, updates int
 	failNext       bool
+
+	rolloutPosts, rolloutUpdates, failurePosts int
+	lastRollout                                rollout.Snapshot
+}
+
+func (f *fakeNotifier) PostRollout(_ context.Context, _, _ string, snap rollout.Snapshot) (string, error) {
+	f.rolloutPosts++
+	f.lastRollout = snap
+	return "2.1", nil
+}
+
+func (f *fakeNotifier) UpdateRollout(_ context.Context, _, _ string, snap rollout.Snapshot) error {
+	f.rolloutUpdates++
+	f.lastRollout = snap
+	return nil
+}
+
+func (f *fakeNotifier) PostFailure(context.Context, string, string, rollout.Snapshot, []string) error {
+	f.failurePosts++
+	return nil
 }
 
 func (f *fakeNotifier) Required() int { return 1 }
@@ -45,9 +67,9 @@ func approvalTemplate() *patchv1alpha1.PatchPlan {
 	return plan
 }
 
-func approvalTestReconciler(t *testing.T, plan *patchv1alpha1.PatchPlan) (*PatchPlanReconciler, *fakeNotifier) {
+func approvalTestReconciler(t *testing.T, plan *patchv1alpha1.PatchPlan, others ...client.Object) (*PatchPlanReconciler, *fakeNotifier) {
 	t.Helper()
-	r := testReconciler(t, plan)
+	r := testReconciler(t, append([]client.Object{plan}, others...)...)
 	n := &fakeNotifier{}
 	r.Slack, r.APIReader, r.Releases = n, r.Client, noReleases{}
 	return r, n
@@ -99,6 +121,9 @@ func TestApprovalAnnounceDecideAndCreateChild(t *testing.T) {
 	var child patchv1alpha1.PatchPlan
 	if err := r.Get(ctx, types.NamespacedName{Name: "auto-v1.13.5"}, &child); err != nil {
 		t.Fatalf("child not created: %v", err)
+	}
+	if ch, ts := slackThread(&child); ch != "C1" || ts != "1.1" {
+		t.Fatalf("child thread = %q %q, want the approval message", ch, ts)
 	}
 	if n.updates != 1 || currentApproval(plan) != nil || len(plan.Status.AutoUpdate.Approval.History) != 1 {
 		t.Fatalf("updates=%d current=%v history=%v", n.updates, currentApproval(plan), plan.Status.AutoUpdate.Approval.History)

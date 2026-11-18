@@ -69,7 +69,9 @@ func (l *Listener) run(ctx context.Context) error {
 				if evt.Type != socketmode.EventTypeInteractive || evt.Request == nil {
 					continue
 				}
-				sm.Ack(*evt.Request)
+				if err := sm.Ack(*evt.Request); err != nil {
+					logger.Info("Slack ack failed", "reason", err.Error())
+				}
 				cb, ok := evt.Data.(slackgo.InteractionCallback)
 				if !ok {
 					continue
@@ -127,7 +129,7 @@ func (l *Listener) Handle(ctx context.Context, cb slackgo.InteractionCallback) e
 	})
 	switch {
 	case apierrors.IsNotFound(err):
-		stale, err = true, nil
+		stale = true
 	case err != nil:
 		return err
 	}
