@@ -29,6 +29,10 @@ const (
 type Release struct {
 	Version     Version
 	PublishedAt time.Time
+	// Body is the release notes in GitHub markdown.
+	Body string
+	// URL is the GitHub page of the release.
+	URL string
 }
 
 // Fetcher lists releases from the GitHub releases API anonymously.
@@ -43,6 +47,8 @@ type githubRelease struct {
 	Draft       bool      `json:"draft"`
 	Prerelease  bool      `json:"prerelease"`
 	PublishedAt time.Time `json:"published_at"`
+	Body        string    `json:"body"`
+	HTMLURL     string    `json:"html_url"`
 }
 
 // List returns the stable releases; drafts, prereleases and unparsable tags are skipped.
@@ -91,7 +97,7 @@ func (f *Fetcher) List(ctx context.Context) ([]Release, error) {
 		if err != nil || v.PreRelease() != "" {
 			continue
 		}
-		releases = append(releases, Release{Version: v, PublishedAt: r.PublishedAt})
+		releases = append(releases, Release{Version: v, PublishedAt: r.PublishedAt, Body: r.Body, URL: r.HTMLURL})
 	}
 	return releases, nil
 }
@@ -107,8 +113,8 @@ type Result struct {
 }
 
 // Select picks the newest release that is newer than current, permitted by allow, and at least
-// minAge old at now.
-func Select(releases []Release, current Version, allow string, minAge time.Duration, now time.Time) Result {
+// minAge old at now. Versions (formatted by Version.String) in exclude are never chosen.
+func Select(releases []Release, current Version, allow string, minAge time.Duration, now time.Time, exclude map[string]bool) Result {
 	var res Result
 
 	for i := range releases {
@@ -117,7 +123,7 @@ func Select(releases []Release, current Version, allow string, minAge time.Durat
 			res.Latest = r
 		}
 
-		if !permitted(current, r.Version, allow) {
+		if exclude[r.Version.String()] || !permitted(current, r.Version, allow) {
 			continue
 		}
 

@@ -64,6 +64,19 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        # Slack approval is off unless this Secret exists and the flags are set, see config/slack.
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: slack-credentials
+              key: bot-token
+              optional: true
+        - name: SLACK_APP_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: slack-credentials
+              key: app-token
+              optional: true
         resources:
           limits:
             cpu: 500m

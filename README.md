@@ -49,7 +49,7 @@ runs preflight checks, and rolls the change out group by group.
 - **Preflight checks** that block a rollout before any node is touched
 - **Failure budgets** that halt or pause the rollout when a threshold is reached
 - **Maintenance windows** with date exclusions
-- **Auto-update** that follows upstream Talos releases, with a minimum release age
+- **Auto-update** that follows upstream Talos releases, with a minimum release age, optionally approved in Slack
 - **Pause, resume and cancel** for manual intervention
 - **Live status tracking** per plan, group and node
 - **Automatic cleanup** of finished `PatchJobs` after a retention period
@@ -474,6 +474,89 @@ spec:
 - `status.autoUpdate` shows the last check, the current, latest and pending (too young) versions,
   and the last created plan.
 
+### Slack approval
+
+An auto-update template can require approval before a release is rolled out. Each eligible release is
+announced in a Slack channel with **Approve release** and **Reject release** buttons, and the child
+PatchPlan is created only once enough approvers have approved. Without it, behaviour is unchanged.
+
+```yaml
+spec:
+  target:
+    autoUpdate:
+      enabled: true
+      approval:
+        slack:
+          enabled: true
+          expireAfter: 72h   # optional; omitted = a pending approval never expires
+```
+
+The Slack connection, channel and approvers are operator-wide settings, shared by all plans.
+The operator connects out to Slack with Socket Mode, so it needs no public endpoint, signing secret or OAuth.
+
+**1. Create the Slack app** in your own workspace from [config/slack/app-manifest.yaml](config/slack/app-manifest.yaml):
+run `make slack-app-url` and open the printed link, or choose *Create New App -> From a manifest* at
+[api.slack.com/apps](https://api.slack.com/apps) and paste the file. Then, in Slack:
+
+1. Install the app to the workspace and copy the bot token (`xoxb-...`).
+2. *Basic Information -> App-Level Tokens*: create a token with the `connections:write` scope (`xapp-...`).
+3. Invite the bot to the channel (`/invite @KangalPatch`) and copy the channel ID.
+4. Optionally upload [config/slack/kangal-patch-icon.png](config/slack/kangal-patch-icon.png) as the app icon
+   (it cannot be part of the manifest).
+
+**2. Create the Secret and configure the operator.** See
+[config/samples/slack-secret-example.yaml](config/samples/slack-secret-example.yaml).
+
+```bash
+# kubectl: edit the channel and approvers in config/slack/kustomization.yaml first
+kubectl apply -f config/samples/slack-secret-example.yaml   # with your tokens
+kubectl apply -k config/slack
+
+# Helm
+helm upgrade kangal-patch oci://ghcr.io/uozalp/helm/kangal-patch --reuse-values \
+  --set slack.existingSecret=slack-credentials --set slack.channelID=C0123456789 \
+  --set 'slack.approvers={U0123456789,U0987654321}' --set slack.requiredApprovals=2
+```
+
+**Extra fields in the message.** Annotations on the template with the prefix `slack.kangalpatch.ozalp.dk/` are
+listed under the plan name, so approvers can see which environment and cluster a release is for:
+
+```yaml
+metadata:
+  name: talosdev-auto-update
+  annotations:
+    slack.kangalpatch.ozalp.dk/environment: Production
+    slack.kangalpatch.ozalp.dk/cluster-name: talosdev
+```
+
+This adds the lines `Environment: Production` and `Cluster name: talosdev`. The part after the prefix is the label (`-` and `_`
+become spaces, first letter capitalized); fields are sorted by label, at most 7 are shown, values are cut at 200
+characters and shown as plain text. A message is re-rendered when its approval changes, so a changed annotation shows
+up with the next vote or state change.
+
+**Rollout status.** Once a release is approved, the child PatchPlan reports its progress as a reply in the thread of the
+release message. It is a single message with a table of the nodes (group, phase, time) that is edited as nodes move
+through Draining, Upgrading, Rebooting and so on, and that turns into the summary (result and duration) when the plan
+finishes. Nodes that have not started yet show as Pending. A node that fails gets a new reply (once per node), which
+also says "Halted, manual action needed" when the failure policy stopped the rollout. The operator keeps the message
+locations in annotations of the child plan (`kangalpatch.ozalp.dk/slack-*`), next to the channel and thread it was
+given when it was created.
+
+Notes:
+
+- A plan with `approval.slack.enabled` stays in `Watching` with an explanatory message and never upgrades while
+  the operator has no valid Slack configuration (tokens and channel set, approver IDs like `U...`,
+  `1 <= requiredApprovals <= number of approvers`). Tokens are read at startup; restart the pods after rotating them.
+- Only the configured approvers can decide. A decision is checked against the approval stored in
+  `status.autoUpdate.approval`, never against the Slack payload, so a message for an older release cannot approve a
+  newer one. Restrict `update` on `patchplans/status` to the operator.
+- One rejection is final. A rejected or expired version is not announced again (while it is in the last 10 entries
+  of `status.autoUpdate.approval.history`); a newer release starts a new approval. To override, create a child
+  PatchPlan by hand with `target.talosVersion`, which bypasses approval.
+- A newer eligible release supersedes a pending approval. Cancelling the template cancels it.
+- One message is posted per plan. Changing the app manifest's scopes requires reinstalling the app.
+- Socket Mode apps cannot be listed in the Slack Marketplace; an app you create yourself is fine.
+
 ### Upgrading across multiple Talos versions
 
 Talos does not reliably support jumping several minor versions in one upgrade. A large skip
@@ -570,6 +653,8 @@ because a kubelet must never run newer than the control plane it connects to.
 | `autoUpdate.allow` | string | Largest automatic change: `patch` or `minor` | `patch` |
 | `autoUpdate.checkInterval` | duration | How often to check for releases (minimum 1m) | `1h` |
 | `autoUpdate.minReleaseAge` | duration | Minimum age of a release before it is used | `0s` |
+| `autoUpdate.approval.slack.enabled` | bool | Require approval in Slack before a release is rolled out, see [Slack approval](#slack-approval) | - |
+| `autoUpdate.approval.slack.expireAfter` | duration | How long a release may wait for a decision; omitted = never | - |
 
 ### Maintenance spec
 
@@ -594,6 +679,11 @@ because a kubelet must never run newer than the control plane it connects to.
 | `--metrics-bind-address` | `:8080` | Metrics endpoint address |
 | `--health-probe-bind-address` | `:8081` | Health and readiness probe address |
 | `--leader-elect` | `false` | Enable leader election (enabled by the Helm chart) |
+| `--slack-channel-id` | - | Slack channel for release approvals; enables [Slack approval](#slack-approval) |
+| `--slack-approvers` | - | Comma-separated Slack user IDs allowed to approve or reject |
+| `--slack-required-approvals` | `1` | Approvals a release needs |
+
+The Slack tokens are read from the `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` environment variables.
 
 ## Examples
 
@@ -606,6 +696,8 @@ Ready-to-apply manifests are in [config/samples](config/samples):
 | [custom-groups.yaml](config/samples/custom-groups.yaml) | Custom rollout groups with a defined order |
 | [maintenance-window.yaml](config/samples/maintenance-window.yaml) | Restrict patching to maintenance windows |
 | [auto-update.yaml](config/samples/auto-update.yaml) | Follow upstream Talos releases |
+| [auto-update-slack-approval.yaml](config/samples/auto-update-slack-approval.yaml) | Auto-update with approval in Slack |
+| [slack-secret-example.yaml](config/samples/slack-secret-example.yaml) | Slack tokens Secret |
 | [talos-secret-example.yaml](config/samples/talos-secret-example.yaml) | Talos credentials Secret |
 
 ## Troubleshooting

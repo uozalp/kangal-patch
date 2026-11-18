@@ -85,6 +85,12 @@ deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/c
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
 	kubectl delete --ignore-not-found=false -k config/manager
 
+##@ Slack
+
+.PHONY: slack-app-url
+slack-app-url: ## Print the link that creates the Slack app from config/slack/app-manifest.yaml.
+	@python3 -c 'import sys,urllib.parse as u; print("https://api.slack.com/apps?new_app=1&manifest_yaml=" + u.quote(open(sys.argv[1]).read()))' config/slack/app-manifest.yaml
+
 ##@ Build Dependencies
 
 ## Location to install dependencies to

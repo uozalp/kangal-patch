@@ -74,3 +74,13 @@ controllerManager:
 rbac:
   # Specifies whether RBAC resources should be created
   create: true
+
+# Slack approval of auto-update releases (see the README). Disabled unless channelID is set.
+slack:
+  # Secret with the keys bot-token (xoxb-) and app-token (xapp-)
+  existingSecret: ""
+  channelID: ""
+  # Slack user IDs allowed to approve or reject
+  approvers: []
+  # Approvals needed; at most the number of approvers
+  requiredApprovals: 1

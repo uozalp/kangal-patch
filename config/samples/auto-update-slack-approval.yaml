@@ -1,0 +1,41 @@
+apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: homelab
+  annotations:
+    # Shown as fields in the Slack message
+    slack.kangalpatch.ozalp.dk/environment: Home
+    slack.kangalpatch.ozalp.dk/cluster-name: homelab
+spec:
+  # Each eligible Talos release is announced in Slack; the child PatchPlan is created once approved.
+  # Needs the operator's Slack configuration, see config/slack.
+  target:
+    autoUpdate:
+      enabled: true
+      allow: patch
+      checkInterval: 30m
+      minReleaseAge: 72h
+      approval:
+        slack:
+          enabled: true
+          expireAfter: 72h   # optional; omitted = a pending approval never expires
+    source: factory
+    installer: nocloud
+
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux
+
+  strategy:
+    order: [controlPlane, workers]
+  groups:
+    controlPlane: {concurrency: 1}
+    workers: {concurrency: 1}
+  failurePolicy:
+    type: Halt
+    maxFailures: 1
+
+  talosConfig:
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch
