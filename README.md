@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/kangal-patch-logo.png" alt="KangalPatch Logo" width="250"/>
+  <img src="docs/logo.png" alt="KangalPatch Logo" width="250"/>
 
   <h1>KangalPatch</h1>
 

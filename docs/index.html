@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KangalPatch – Safe, rolling upgrades for Talos Linux clusters</title>
+<meta name="description" content="KangalPatch is a Kubernetes operator that automates rolling upgrades of Talos Linux nodes: draining, upgrading, rebooting and verifying each node within the failure limits you set.">
+<meta name="theme-color" content="#1B66F5">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:title" content="KangalPatch – Safe, rolling upgrades for Talos Linux clusters">
+<meta property="og:description" content="A Kubernetes operator that drains, upgrades, reboots and verifies Talos Linux nodes, group by group.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://uozalp.github.io/kangal-patch/">
+<meta property="og:image" content="https://uozalp.github.io/kangal-patch/logo.png">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #F6F8FC;
+  --surface: #FFFFFF;
+  --ink: #0D1B3E;
+  --muted: #52607F;
+  --line: #DCE3F0;
+  --blue: #1B66F5;
+  --blue-strong: #0F4FD1;
+  --on-blue: #FFFFFF;
+  --fawn: #E3AC6C;
+  --fawn-soft: #FBF0E0;
+  --code-bg: #0B1530;
+  --code-ink: #DCE6FF;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09112A;
+    --surface: #0F1B3A;
+    --ink: #E8EEFC;
+    --muted: #9CABCB;
+    --line: #1E2D54;
+    --blue: #5B93FF;
+    --blue-strong: #7BA8FF;
+    --on-blue: #06122E;
+    --fawn: #E9B57A;
+    --fawn-soft: rgba(233, 181, 122, 0.12);
+    --code-bg: #070E22;
+    color-scheme: dark;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 84px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+img { max-width: 100%; display: block; }
+a { color: var(--blue-strong); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+code, kbd { font-family: var(--mono); font-size: 0.9em; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; border-radius: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: 12px; top: -60px; background: var(--blue); color: var(--on-blue); padding: 10px 16px; border-radius: 8px; z-index: 100; }
+.skip:focus { top: 12px; }
+
+.wrap { width: min(1120px, 100% - 40px); margin-inline: auto; }
+
+/* Header */
+.site-header {
+  position: sticky; top: 0; z-index: 50;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.header-row { display: flex; align-items: center; gap: 28px; height: 64px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); font-family: var(--display); font-weight: 700; font-size: 1.2rem; letter-spacing: -0.01em; }
+.brand img { width: 34px; height: 34px; }
+.nav { display: flex; gap: 22px; margin-left: auto; align-items: center; }
+.nav a { color: var(--muted); text-decoration: none; font-size: 0.95rem; font-weight: 500; }
+.nav a:hover { color: var(--ink); }
+.nav .gh { color: var(--ink); border: 1.5px solid var(--line); border-radius: 9px; padding: 6px 14px; }
+.nav .gh:hover { border-color: var(--blue); }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 8px; font: 600 1rem var(--body); padding: 12px 22px; border-radius: 10px; text-decoration: none; border: 1.5px solid transparent; cursor: pointer; }
+.btn-primary { background: var(--blue); color: var(--on-blue); }
+.btn-primary:hover { background: var(--blue-strong); text-decoration: none; }
+.btn-ghost { color: var(--ink); border-color: var(--line); background: var(--surface); }
+.btn-ghost:hover { border-color: var(--blue); text-decoration: none; }
+
+/* Hero */
+.hero { padding: clamp(40px, 7vw, 88px) 0 clamp(36px, 6vw, 72px); }
+.hero-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: clamp(24px, 5vw, 64px); align-items: center; }
+.hero h1 { font-family: var(--display); font-weight: 800; font-size: clamp(2.5rem, 5.4vw, 4.15rem); line-height: 1.03; letter-spacing: -0.03em; margin: 0 0 22px; text-wrap: balance; }
+.hero .lead { font-size: 1.2rem; color: var(--muted); max-width: 36rem; margin: 0 0 30px; }
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+.hero-note { font-size: 0.95rem; color: var(--muted); margin: 18px 0 0; max-width: 36rem; }
+.hero-logo { justify-self: center; width: min(100%, 440px); }
+.hero-logo img { width: 100%; height: auto; filter: drop-shadow(0 22px 36px rgba(15, 79, 209, 0.22)); }
+
+/* Code blocks */
+.code { position: relative; background: var(--code-bg); border-radius: 12px; color: var(--code-ink); text-align: left; }
+.code pre { margin: 0; padding: 18px 20px; overflow-x: auto; font: 400 0.84rem/1.7 var(--mono); tab-size: 2; }
+.code code { font-size: inherit; }
+.code .copy { position: absolute; top: 10px; right: 10px; font: 500 0.78rem var(--body); color: #B9C7EA; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.code .copy:hover { background: rgba(255,255,255,0.15); color: #fff; }
+.code.has-copy pre { padding-right: 76px; }
+.k { color: #8EB8FF; }
+.s { color: #F2C98F; }
+.c { color: #7C8DB8; font-style: italic; }
+.cmd { color: #86E3BB; }
+.f { color: #C8B8FF; }
+.p { color: #7C8DB8; user-select: none; }
+.o { color: #A9B7DA; }
+
+/* Sections */
+.section { padding: clamp(52px, 8vw, 100px) 0; }
+.section-alt { background: var(--surface); border-block: 1px solid var(--line); }
+.section h2 { font-family: var(--display); font-weight: 700; font-size: clamp(1.85rem, 3.6vw, 2.7rem); line-height: 1.1; letter-spacing: -0.025em; margin: 0 0 14px; text-wrap: balance; }
+.section .intro { color: var(--muted); max-width: 40rem; margin: 0 0 40px; font-size: 1.1rem; }
+
+/* Simulator */
+.sim { background: var(--code-bg); color: var(--code-ink); border-radius: 16px; padding: clamp(16px, 2.4vw, 28px); border: 1px solid rgba(255,255,255,0.06); }
+.sim-status { margin: 0 0 22px; padding: 14px 16px; background: rgba(255,255,255,0.045); border-radius: 10px; font: 400 0.82rem/1.7 var(--mono); overflow-x: auto; white-space: pre; color: #C9D6F7; }
+.sim-status .hd { color: #7C8DB8; }
+.sim-status .ph { font-weight: 500; }
+.ph[data-p="Completed"] { color: #5FD6A2; }
+.ph[data-p="InProgress"], .ph[data-p="Preflighting"] { color: #8EB8FF; }
+.ph[data-p="Paused"] { color: #F2C98F; }
+.ph[data-p="Failed"] { color: #FF8A8E; }
+.sim-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 28px; }
+.sim-group + .sim-group { margin-top: 22px; }
+.sim-group h3 { margin: 0 0 10px; font: 600 0.95rem var(--body); color: #DCE6FF; }
+.sim-group h3 span { font-weight: 400; color: #8E9DC4; margin-left: 8px; }
+.nodes { display: flex; flex-wrap: wrap; gap: 10px; }
+.node { width: 92px; padding: 9px 6px 8px; border-radius: 10px; border: 1.5px solid #2B3C68; text-align: center; transition: background-color .3s, border-color .3s; }
+.node b { display: block; font: 500 0.78rem var(--mono); color: #DCE6FF; }
+.node i { display: block; font: normal 400 0.74rem var(--body); color: #8E9DC4; margin-top: 2px; }
+.node[data-s="Draining"] { background: rgba(233,181,122,.16); border-color: #E9B57A; }
+.node[data-s="Upgrading"] { background: rgba(91,147,255,.2); border-color: #5B93FF; }
+.node[data-s="Rebooting"] { background: rgba(167,139,250,.2); border-color: #A78BFA; }
+.node[data-s="Completed"] { background: rgba(47,182,124,.17); border-color: #2FB67C; }
+.node[data-s="Failed"] { background: rgba(229,72,77,.22); border-color: #F0686C; }
+.node:not([data-s="Pending"]) i { color: #DCE6FF; }
+.sim-log { margin: 0; padding: 14px 16px; background: rgba(255,255,255,0.045); border-radius: 10px; font: 400 0.8rem/1.7 var(--mono); min-height: 15.5rem; color: #B7C5E8; overflow: hidden; }
+.sim-log div { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.sim-log .t { color: #6F80AB; margin-right: 10px; }
+.sim-log .bad { color: #FF8A8E; }
+.sim-log .good { color: #5FD6A2; }
+.sim-ctl { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.sim-ctl button { font: 600 0.92rem var(--body); color: #E8EEFC; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); border-radius: 9px; padding: 9px 16px; cursor: pointer; }
+.sim-ctl button:hover:not(:disabled) { background: rgba(255,255,255,0.16); }
+.sim-ctl button:disabled { opacity: .4; cursor: not-allowed; }
+.sim-ctl .run { background: var(--blue); border-color: transparent; color: var(--on-blue); }
+.sim-ctl .run:hover:not(:disabled) { background: var(--blue-strong); }
+.sim .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 20px 0 0; padding: 0; list-style: none; font-size: 0.85rem; color: #8E9DC4; }
+.sim .legend li { display: flex; align-items: center; gap: 7px; }
+.sim .legend span { width: 11px; height: 11px; border-radius: 3px; border: 1.5px solid; }
+
+/* Features */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(24px, 4vw, 48px); }
+.feature { border-top: 3px solid var(--blue); padding-top: 18px; }
+.feature:nth-child(2) { border-color: var(--fawn); }
+.feature h3 { font-family: var(--display); font-size: 1.4rem; letter-spacing: -0.015em; margin: 0 0 8px; }
+.feature ul { list-style: none; margin: 0; padding: 0; }
+.feature li { padding: 14px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 1rem; }
+.feature li:first-child { border-top: 0; }
+.feature li strong { color: var(--ink); font-weight: 600; display: block; margin-bottom: 2px; }
+
+/* How it works */
+.how { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(28px, 5vw, 64px); align-items: start; }
+.how p { margin: 0 0 18px; color: var(--muted); }
+.how p strong, .how li strong { color: var(--ink); }
+.steps { counter-reset: s; list-style: none; margin: 0; padding: 0; }
+.steps > li { counter-increment: s; position: relative; padding: 0 0 22px 52px; }
+.steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 34px; height: 34px; border-radius: 50%; background: var(--surface); border: 1.5px solid var(--blue); color: var(--blue-strong); font: 600 0.95rem/31px var(--body); text-align: center; }
+.steps > li::after { content: ""; position: absolute; left: 16.5px; top: 40px; bottom: 6px; width: 1.5px; background: var(--line); }
+.steps > li:last-child { padding-bottom: 0; }
+.steps > li:last-child::after { display: none; }
+.steps h3 { margin: 3px 0 6px; font: 600 1.1rem var(--body); }
+.steps p { margin: 0 0 12px; }
+.steps .code { margin-top: 10px; }
+.pipeline { margin-top: 56px; }
+.pipeline h3 { font-family: var(--display); font-size: 1.35rem; margin: 0 0 6px; letter-spacing: -0.015em; }
+.pipeline > p { color: var(--muted); margin: 0 0 20px; max-width: 44rem; }
+.phases { display: flex; flex-wrap: wrap; gap: 10px 0; align-items: center; list-style: none; padding: 0; margin: 0; }
+.phases li { display: flex; align-items: center; }
+.phases li:not(:last-child)::after { content: ""; width: 22px; height: 2px; background: var(--line); }
+.chip { font: 500 0.85rem var(--mono); padding: 6px 12px; border-radius: 8px; background: var(--surface); border: 1.5px solid var(--line); }
+.section-alt .chip { background: var(--bg); }
+.chip[data-k="drain"] { border-color: var(--fawn); }
+.chip[data-k="up"] { border-color: var(--blue); }
+.chip[data-k="reboot"] { border-color: #A78BFA; }
+.chip[data-k="ok"] { border-color: #2FB67C; }
+.chip[data-opt] { border-style: dashed; }
+.footnote { font-size: 0.92rem; color: var(--muted); margin: 14px 0 0; }
+
+/* Callout */
+.callout { background: var(--fawn-soft); border-left: 4px solid var(--fawn); border-radius: 0 10px 10px 0; padding: 14px 18px; margin: 16px 0; color: var(--ink); font-size: 0.98rem; }
+.callout strong { font-weight: 600; }
+.callout p { margin: 0; color: inherit; }
+
+/* Tabs */
+.tablist { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.tablist button { font: 500 0.95rem var(--body); color: var(--muted); background: none; border: 0; padding: 10px 14px; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.tablist button:hover { color: var(--ink); }
+.tablist button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--blue); }
+[role="tabpanel"][hidden] { display: none; }
+.tab-note { margin: 0 0 14px; color: var(--muted); font-size: 1rem; max-width: 46rem; }
+.recipes { max-width: 860px; }
+
+/* Quick start */
+.prereq { display: flex; flex-wrap: wrap; gap: 8px 26px; list-style: none; margin: 0 0 40px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; font-size: 0.98rem; }
+.prereq li::before { content: "\2713"; color: #2FB67C; font-weight: 700; margin-right: 8px; }
+.qs { max-width: 860px; }
+
+/* Docs */
+.docs { display: grid; grid-template-columns: 1fr 1fr; gap: 0 clamp(24px, 5vw, 64px); }
+.docs a { display: block; padding: 18px 0; border-top: 1px solid var(--line); text-decoration: none; color: var(--ink); }
+.docs a:hover strong { color: var(--blue-strong); text-decoration: underline; text-underline-offset: 4px; }
+.docs strong { display: block; font-weight: 600; font-size: 1.08rem; }
+.docs span { color: var(--muted); font-size: 0.97rem; }
+
+/* Footer */
+.site-footer { border-top: 1px solid var(--line); padding: 44px 0 56px; color: var(--muted); font-size: 0.95rem; }
+.foot-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 32px; }
+.foot-brand { display: flex; gap: 14px; align-items: flex-start; }
+.foot-brand img { width: 52px; height: 52px; flex: none; }
+.foot-brand p { margin: 0 0 8px; max-width: 34rem; }
+.foot-brand .name { font-family: var(--display); font-weight: 700; font-size: 1.15rem; color: var(--ink); margin-bottom: 4px; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 8px 24px; align-content: flex-start; justify-content: flex-end; }
+.foot-links a { color: var(--ink); text-decoration: none; font-weight: 500; }
+.foot-links a:hover { color: var(--blue-strong); text-decoration: underline; }
+.legal { margin-top: 28px; font-size: 0.86rem; }
+
+@media (max-width: 900px) {
+  .hero-grid, .how, .sim-grid, .features, .docs, .foot-grid { grid-template-columns: 1fr; }
+  .hero-logo { order: -1; width: min(60%, 260px); justify-self: start; }
+  .foot-links { justify-content: flex-start; }
+}
+@media (max-width: 680px) {
+  .nav a:not(.gh):not(.keep) { display: none; }
+  .nav { gap: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .node { transition: none; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="#top" aria-label="KangalPatch home">
+      <img src="favicon.png" alt="" width="34" height="34">
+      KangalPatch
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="#rollout">Rollout</a>
+      <a href="#features">Features</a>
+      <a href="#how-it-works">How it works</a>
+      <a class="keep" href="#quick-start">Quick start</a>
+      <a href="#docs">Docs</a>
+      <a class="gh" href="https://github.com/uozalp/kangal-patch">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<!-- Hero -->
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <h1>Safe, rolling upgrades for Talos Linux clusters</h1>
+      <p class="lead">KangalPatch is a Kubernetes operator. Describe the upgrade in a PatchPlan and it drains, upgrades, reboots and verifies each node, group by group, within the failure limits you set.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#quick-start">Get started</a>
+        <a class="btn btn-ghost" href="https://github.com/uozalp/kangal-patch">View on GitHub</a>
+      </div>
+      <div class="code has-copy">
+        <button class="copy" type="button" aria-label="Copy install command">Copy</button>
+<pre><code data-lang="bash">helm install kangal-patch oci://ghcr.io/uozalp/helm/kangal-patch \
+  --version 0.2.0 \
+  --namespace kangal-patch \
+  --create-namespace</code></pre>
+      </div>
+      <p class="hero-note">MIT licensed. Installs with Helm or kubectl. Version checks cover the Talos and Kubernetes support matrix for Talos 1.10 to 1.14.</p>
+    </div>
+    <div class="hero-logo">
+      <img src="logo.png" width="720" height="720" alt="KangalPatch logo: a Kangal dog in front of the Kubernetes helm">
+    </div>
+  </div>
+</section>
+
+<!-- Rollout simulator -->
+<section class="section section-alt" id="rollout">
+  <div class="wrap">
+    <h2>Watch a rollout</h2>
+    <p class="intro">A simulated PatchPlan with the default order: control plane first, then workers. Pause the plan, or make the next node fail to see the <code>Halt</code> failure policy stop it.</p>
+
+    <div class="sim" id="sim">
+      <pre class="sim-status" id="sim-status" aria-hidden="true"></pre>
+      <p class="sr-only" id="sim-sr">Simulation of a PatchPlan upgrading three control plane nodes and six worker nodes to Talos v1.12.1. Use the buttons below to run, pause, restart, or make the next node fail.</p>
+      <div class="sim-grid">
+        <div id="sim-nodes" aria-hidden="true"></div>
+        <div class="sim-log" id="sim-log" role="log" aria-live="off" aria-hidden="true"></div>
+      </div>
+      <div class="sim-ctl">
+        <button type="button" class="run" id="btn-run">Run rollout</button>
+        <button type="button" id="btn-pause" disabled>Pause plan</button>
+        <button type="button" id="btn-fail" disabled>Fail next node</button>
+      </div>
+      <ul class="legend" aria-label="Node phases">
+        <li><span style="border-color:#2B3C68"></span>Pending</li>
+        <li><span style="border-color:#E9B57A;background:rgba(233,181,122,.3)"></span>Draining</li>
+        <li><span style="border-color:#5B93FF;background:rgba(91,147,255,.35)"></span>Upgrading</li>
+        <li><span style="border-color:#A78BFA;background:rgba(167,139,250,.35)"></span>Rebooting</li>
+        <li><span style="border-color:#2FB67C;background:rgba(47,182,124,.35)"></span>Completed</li>
+        <li><span style="border-color:#F0686C;background:rgba(229,72,77,.4)"></span>Failed</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="section" id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <p class="intro">Everything a Talos upgrade needs, declared in one resource and enforced by the operator.</p>
+    <div class="features">
+      <div class="feature">
+        <h3>Safe by default</h3>
+        <ul>
+          <li><strong>Preflight checks</strong>Block a rollout before any node is touched: Kubernetes API readiness, Talos credentials, installer image and version support.</li>
+          <li><strong>Safe draining</strong>Drains enforce PodDisruptionBudgets, with timeouts for the drain and the reboot.</li>
+          <li><strong>Failure budgets</strong>Halt or pause the plan once the number of failed nodes you set is reached.</li>
+        </ul>
+      </div>
+      <div class="feature">
+        <h3>In the order you choose</h3>
+        <ul>
+          <li><strong>Rollout groups</strong>Patch databases, GPU nodes, workers and control plane in your order, each group with its own concurrency.</li>
+          <li><strong>Maintenance windows</strong>Allow patching only in set time windows and skip holidays with excluded dates.</li>
+          <li><strong>Pause, resume, cancel</strong>Step in at any time with a single <code>kubectl patch</code>.</li>
+        </ul>
+      </div>
+      <div class="feature">
+        <h3>Hands-off when you want it</h3>
+        <ul>
+          <li><strong>Auto-update</strong>Follow upstream Talos releases, with a minimum release age before one is used.</li>
+          <li><strong>Kubernetes upgrades</strong>Patch the kubelet, control plane static pods and kube-proxy without reboots.</li>
+          <li><strong>Live status</strong>Track every plan, group and node. Finished PatchJobs are cleaned up after a retention period.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- How it works -->
+<section class="section section-alt" id="how-it-works">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="intro">You create one resource. The operator does the rest.</p>
+    <div class="how">
+      <div>
+        <p>A <strong><code>PatchPlan</code></strong> declares the target versions, node selection, rollout order, safety settings and schedule. It is the only resource you create.</p>
+        <p>For every node it schedules, the operator creates a <strong><code>PatchJob</code></strong> that moves that single node through the upgrade state machine.</p>
+        <div class="code">
+<pre><code data-lang="plain">PatchPlan
+  +-- PatchJob / node-1
+  +-- PatchJob / node-2
+  +-- PatchJob / node-3
+  +-- PatchJob / node-4</code></pre>
+        </div>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Select and group nodes</h3>
+          <p><code>nodeSelector</code> picks the nodes. Each one is assigned to the first matching group in <code>strategy.order</code>.</p>
+        </li>
+        <li>
+          <h3>Run preflight checks</h3>
+          <p>The checks run once. Nothing is scheduled until they all pass.</p>
+        </li>
+        <li>
+          <h3>Patch each node</h3>
+          <p>Cordon and drain, upgrade Talos, reboot, verify. If you set a Kubernetes target, the Kubernetes components are patched and validated too.</p>
+        </li>
+        <li>
+          <h3>Enforce your limits</h3>
+          <p>Per-group concurrency, timing and failure settings apply throughout.</p>
+        </li>
+        <li>
+          <h3>Stop when it matters</h3>
+          <p>If failures pass the threshold, the plan halts or pauses according to <code>failurePolicy</code>.</p>
+        </li>
+      </ol>
+    </div>
+
+    <div class="pipeline">
+      <h3>Every node passes through the same phases</h3>
+      <p>A PatchJob tracks one node from start to finish.</p>
+      <ol class="phases">
+        <li><span class="chip">Pending</span></li>
+        <li><span class="chip" data-k="drain">Draining</span></li>
+        <li><span class="chip" data-k="up">Upgrading</span></li>
+        <li><span class="chip" data-k="reboot">Rebooting</span></li>
+        <li><span class="chip" data-k="up" data-opt>UpgradingKubernetes</span></li>
+        <li><span class="chip" data-k="up" data-opt>ValidatingKubernetes</span></li>
+        <li><span class="chip" data-k="ok">Completed</span></li>
+      </ol>
+      <p class="footnote">Dashed phases only run when <code>target.kubernetesVersion</code> is set. A job that fails ends in <code>Failed</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Quick start -->
+<section class="section" id="quick-start">
+  <div class="wrap">
+    <h2>Quick start</h2>
+    <p class="intro">From an empty namespace to your first rolling upgrade in four steps.</p>
+    <ul class="prereq">
+      <li>A Kubernetes cluster running Talos Linux</li>
+      <li><code>kubectl</code> configured for the cluster</li>
+      <li>Helm 3.x for the Helm install</li>
+      <li>Talos API client credentials: CA certificate, client certificate and key</li>
+    </ul>
+
+    <ol class="steps qs">
+      <li>
+        <h3>Install the operator</h3>
+        <div class="tabs" data-tabs>
+          <div class="tablist" role="tablist" aria-label="Install method">
+            <button role="tab" type="button">Helm</button>
+            <button role="tab" type="button">kubectl</button>
+          </div>
+          <div role="tabpanel">
+            <div class="code has-copy">
+              <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash">helm install kangal-patch oci://ghcr.io/uozalp/helm/kangal-patch \
+  --version 0.2.0 \
+  --namespace kangal-patch \
+  --create-namespace</code></pre>
+            </div>
+            <p class="footnote">Two replicas with leader election are the default. Helm installs the CRDs on first install but never upgrades them, so apply the CRDs from the GitHub Release before upgrading the chart.</p>
+          </div>
+          <div role="tabpanel">
+            <div class="code has-copy">
+              <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash"># CRDs
+kubectl apply -k config/crd
+
+# RBAC and operator
+kubectl apply -k config/manager</code></pre>
+            </div>
+          </div>
+        </div>
+        <p style="margin-top:16px">Check that the operator and its CRDs are there:</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash">kubectl -n kangal-patch get pods
+kubectl get crd patchplans.kangalpatch.ozalp.dk patchjobs.kangalpatch.ozalp.dk</code></pre>
+        </div>
+      </li>
+      <li>
+        <h3>Create the Talos credentials Secret</h3>
+        <p>The operator reads the Talos API credentials from a Secret in its own namespace. Values can be raw PEM or base64-encoded, as in a <code>talosconfig</code> file.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash">CA_CERT=$(base64 -w0 &lt; /path/to/ca.crt)
+CLIENT_CERT=$(base64 -w0 &lt; /path/to/client.crt)
+CLIENT_KEY=$(base64 -w0 &lt; /path/to/client.key)
+
+kubectl create secret generic talos-credentials \
+  --namespace kangal-patch \
+  --from-literal=ca.crt="$CA_CERT" \
+  --from-literal=tls.crt="$CLIENT_CERT" \
+  --from-literal=tls.key="$CLIENT_KEY"</code></pre>
+        </div>
+        <div class="callout"><p><strong>Treat this Secret as sensitive.</strong> These credentials grant full administrative access to the Talos API. Restrict access with RBAC and consider an external secret manager.</p></div>
+      </li>
+      <li>
+        <h3>Create a PatchPlan</h3>
+        <p>This plan upgrades the control plane first, then the workers, one node at a time.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="yaml">apiVersion: kangalpatch.ozalp.dk/v1alpha1
+kind: PatchPlan
+metadata:
+  name: simple-upgrade
+spec:
+  target:
+    talosVersion: v1.11.6
+    source: factory
+    installer: nocloud
+
+  # Control plane first, then workers (this is the default order)
+  strategy:
+    order: [controlPlane, workers]
+
+  # How many nodes of a group are patched at once
+  groups:
+    controlPlane:
+      concurrency: 1
+    workers:
+      concurrency: 1
+
+  # Timing
+  delayBetweenNodes: 300s
+
+  # Safety
+  respectPDBs: true
+  drainTimeout: 5m
+  rebootTimeout: 10m
+  failurePolicy:
+    type: Halt
+    maxFailures: 1
+
+  # Talos API
+  talosConfig:
+    endpoints:
+      - 10.0.0.10:50000
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch</code></pre>
+        </div>
+        <div class="code has-copy" style="margin-top:12px">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash">kubectl apply -f patchplan.yaml</code></pre>
+        </div>
+        <p class="footnote"><code>source: factory</code> resolves the installer from Talos Image Factory and is required from Talos 1.14. Without a <code>schematicID</code>, each node keeps the schematic it runs today, so system extensions and kernel arguments survive the upgrade.</p>
+      </li>
+      <li>
+        <h3>Monitor progress</h3>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="term">$ kubectl get patchplan -w
+NAME             PHASE       TALOSTARGET   K8STARGET   TOTAL   RUNNING   COMPLETED   FAILED   AGE
+simple-upgrade   Completed   v1.11.6                   6       0         6           0        79m
+
+$ kubectl get patchjob</code></pre>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- Recipes -->
+<section class="section section-alt" id="recipes">
+  <div class="wrap">
+    <h2>Recipes</h2>
+    <p class="intro">Common PatchPlan settings, ready to adapt. More manifests live in <a href="https://github.com/uozalp/kangal-patch/tree/main/config/samples">config/samples</a>.</p>
+    <div class="recipes tabs" data-tabs>
+      <div class="tablist" role="tablist" aria-label="Recipes">
+        <button role="tab" type="button">Rollout groups</button>
+        <button role="tab" type="button">Maintenance windows</button>
+        <button role="tab" type="button">Auto-update</button>
+        <button role="tab" type="button">Custom schematic</button>
+        <button role="tab" type="button">Pause and cancel</button>
+      </div>
+
+      <div role="tabpanel">
+        <p class="tab-note">Groups are label filters over the nodes your plan selects. They run strictly in <code>strategy.order</code>, and a node is patched at most once per plan: the first listed group it matches schedules it.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="yaml">spec:
+  nodeSelector:
+    matchLabels:
+      environment: production
+  groups:
+    database:
+      selector:
+        matchLabels: {workload: database}
+      concurrency: 1
+    kafka:
+      selector:
+        matchLabels: {workload: kafka}
+      concurrency: 1
+    gpu:
+      selector:
+        matchLabels: {accelerator: nvidia}
+      concurrency: 2
+    workers:        # built in, declared only to set its concurrency
+      concurrency: 3
+  strategy:
+    order: [database, kafka, gpu, workers, controlPlane]
+  failurePolicy:
+    type: Halt
+    maxFailures: 1
+  retention:
+    history: 168h</code></pre>
+        </div>
+      </div>
+
+      <div role="tabpanel">
+        <p class="tab-note">Patching pauses outside the windows and on excluded dates. All times are UTC, windows may span midnight, and omitting <code>days</code> matches every day.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="yaml">spec:
+  maintenance:
+    excludeDates:             # holidays, blackout periods (YYYY-MM-DD)
+      - "2026-12-24"
+      - "2026-12-25"
+      - "2026-12-31"
+
+    windows:                  # when patching is allowed (UTC)
+      - days: ["Monday", "Friday"]
+        startTime: "01:00"
+        endTime: "05:00"
+
+      - days: ["Wed"]
+        startTime: "22:00"
+        endTime: "02:00"      # spans midnight
+
+      - startTime: "03:00"    # every day
+        endTime: "04:00"</code></pre>
+        </div>
+      </div>
+
+      <div role="tabpanel">
+        <p class="tab-note">The plan becomes a template in the <code>Watching</code> phase. Every <code>checkInterval</code> it creates a child plan for a new upstream Talos release, so each release has its own plan and history. Omit <code>talosVersion</code> on templates.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="yaml">spec:
+  target:
+    source: factory       # required once releases reach Talos 1.14
+    installer: nocloud
+    autoUpdate:
+      enabled: true
+      allow: patch          # patch (default) | minor
+      checkInterval: 30m    # default 1h, minimum 1m
+      minReleaseAge: 72h    # default 0s</code></pre>
+        </div>
+      </div>
+
+      <div role="tabpanel">
+        <p class="tab-note">Set <code>schematicID</code> to change the extensions and customization of the Talos image on every node. Add <code>secureBoot</code> to use the secure boot installer.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="yaml">spec:
+  target:
+    talosVersion: v1.12.1
+    source: factory
+    installer: aws
+    schematicID: 376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba
+    secureBoot: true                  # adds the -secureboot suffix
+  groups:
+    workers:
+      concurrency: 2
+  talosConfig:
+    endpoints:
+      - 10.0.0.10:50000
+    secretRef:
+      name: talos-credentials
+      namespace: kangal-patch</code></pre>
+        </div>
+      </div>
+
+      <div role="tabpanel">
+        <p class="tab-note">A cancelled plan stops scheduling new nodes. PatchJobs already in progress run to completion, and setting <code>cancelled</code> back to <code>false</code> resumes the plan. To stop for good, delete the plan.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash"># Pause and resume
+kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":true}}'
+kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"paused":false}}'
+
+# Cancel
+kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":true}}'</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout recipes" style="margin-top:32px">
+      <p><strong>Several minor versions behind?</strong> Upgrade in stages. Talos does not reliably support skipping minor versions, and a large jump can fail silently: the node reboots into its old partition and the PatchJob waits in <code>Rebooting</code>. For example, go from v1.11.x to v1.13.10, then to v1.14.0, running one PatchPlan per stage.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Docs -->
+<section class="section" id="docs">
+  <div class="wrap">
+    <h2>Documentation</h2>
+    <p class="intro">The full reference lives in the repository README.</p>
+    <div class="docs">
+      <a href="https://github.com/uozalp/kangal-patch#configuration-reference">
+        <strong>Configuration reference</strong>
+        <span>Every PatchPlan, target and maintenance field, with types and defaults, plus the operator flags.</span>
+      </a>
+      <a href="https://github.com/uozalp/kangal-patch#operations-guide">
+        <strong>Operations guide</strong>
+        <span>Maintenance windows, rollout groups, preflight checks, auto-update and Kubernetes version compatibility.</span>
+      </a>
+      <a href="https://github.com/uozalp/kangal-patch#troubleshooting">
+        <strong>Troubleshooting</strong>
+        <span>Failed preflight, stuck reboots, halted plans and nothing being scheduled.</span>
+      </a>
+      <a href="https://github.com/uozalp/kangal-patch/tree/main/config/samples">
+        <strong>Sample manifests</strong>
+        <span>Ready-to-apply plans for control plane only, custom groups, maintenance windows and auto-update.</span>
+      </a>
+      <a href="https://github.com/uozalp/kangal-patch/blob/main/helm/kangal-patch/values.yaml">
+        <strong>Helm chart values</strong>
+        <span>Replicas, resources, leader election and RBAC settings.</span>
+      </a>
+      <a href="https://github.com/uozalp/kangal-patch#contributing">
+        <strong>Contributing</strong>
+        <span>Open an issue for larger changes, then send a pull request. Run <code>make test</code> and <code>make lint</code> first.</span>
+      </a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="favicon.png" alt="" width="52" height="52">
+        <div>
+          <p class="name">KangalPatch</p>
+          <p>A Kubernetes operator for safe, rolling upgrades of Talos Linux clusters. Named after the Kangal, the livestock guardian dog.</p>
+        </div>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/uozalp/kangal-patch">Repository</a>
+        <a href="https://github.com/uozalp/kangal-patch/issues">Issues</a>
+        <a href="https://github.com/uozalp/kangal-patch/blob/main/LICENSE">MIT License</a>
+      </div>
+    </div>
+    <p class="legal">KangalPatch is an independent open source project released under the MIT License. Talos Linux is a project of Sidero Labs. Kubernetes is a trademark of The Linux Foundation.</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- Syntax highlighting ---------- */
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function hlLine(line, lang) {
+    if (lang === "plain") return esc(line);
+    if (lang === "term") {
+      if (/^\$ /.test(line)) return "<span class='p'>$ </span><span class='cmd'>" + esc(line.slice(2)) + "</span>";
+      return "<span class='o'>" + esc(line) + "</span>";
+    }
+    var comment = "", m = line.match(/(^|\s)(#.*)$/);
+    if (m) { comment = "<span class='c'>" + esc(m[2]) + "</span>"; line = line.slice(0, line.length - m[2].length); }
+    var out = esc(line);
+    out = out.replace(/("[^"]*"|'[^']*')/g, "<span class='s'>$1</span>");
+    if (lang === "yaml") {
+      out = out.replace(/^(\s*-?\s*)([\w.\/-]+)(:)(?=\s|$)/, "$1<span class='k'>$2</span>$3");
+    } else {
+      out = out.replace(/^(\s*)(kubectl|helm|make|talosctl)\b/, "$1<span class='cmd'>$2</span>");
+      out = out.replace(/(^|\s)(--?[a-zA-Z][\w-]*)(?=[=\s]|$)/g, "$1<span class='f'>$2</span>");
+    }
+    return out + comment;
+  }
+  document.querySelectorAll("pre code[data-lang]").forEach(function (el) {
+    var lang = el.getAttribute("data-lang");
+    el.innerHTML = el.textContent.split("\n").map(function (l) { return hlLine(l, lang); }).join("\n");
+  });
+
+  /* ---------- Copy buttons ---------- */
+  document.querySelectorAll(".code .copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.parentElement.querySelector("code").textContent;
+      function done(ok) {
+        btn.textContent = ok ? "Copied" : "Press Ctrl+C";
+        setTimeout(function () { btn.textContent = "Copy"; }, 1600);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      } else { done(false); }
+    });
+  });
+
+  /* ---------- Tabs ---------- */
+  var tabUid = 0;
+  document.querySelectorAll("[data-tabs]").forEach(function (root) {
+    var tabs = Array.prototype.slice.call(root.querySelectorAll(":scope > .tablist > [role=tab]"));
+    var panels = Array.prototype.slice.call(root.querySelectorAll(":scope > [role=tabpanel]"));
+    var id = ++tabUid;
+    tabs.forEach(function (t, i) {
+      t.id = "tab-" + id + "-" + i;
+      panels[i].id = "panel-" + id + "-" + i;
+      t.setAttribute("aria-controls", panels[i].id);
+      panels[i].setAttribute("aria-labelledby", t.id);
+      t.addEventListener("click", function () { select(i, false); });
+      t.addEventListener("keydown", function (e) {
+        var n = null;
+        if (e.key === "ArrowRight") n = (i + 1) % tabs.length;
+        if (e.key === "ArrowLeft") n = (i - 1 + tabs.length) % tabs.length;
+        if (e.key === "Home") n = 0;
+        if (e.key === "End") n = tabs.length - 1;
+        if (n !== null) { e.preventDefault(); select(n, true); }
+      });
+    });
+    function select(n, focus) {
+      tabs.forEach(function (t, i) {
+        var on = i === n;
+        t.setAttribute("aria-selected", on ? "true" : "false");
+        t.tabIndex = on ? 0 : -1;
+        panels[i].hidden = !on;
+      });
+      if (focus) tabs[n].focus();
+    }
+    select(0, false);
+  });
+
+  /* ---------- Rollout simulator ---------- */
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var DUR = { Draining: 3, Upgrading: 4, Rebooting: 3 };
+  var NEXT = { Draining: "Upgrading", Upgrading: "Rebooting", Rebooting: "Completed" };
+  var GROUPS = [
+    { name: "controlPlane", conc: 1, nodes: ["cp-1", "cp-2", "cp-3"] },
+    { name: "workers", conc: 2, nodes: ["worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6"] }
+  ];
+  var TARGET = "v1.12.1", TICK_MS = 600;
+
+  var elStatus = document.getElementById("sim-status");
+  var elNodes = document.getElementById("sim-nodes");
+  var elLog = document.getElementById("sim-log");
+  var bRun = document.getElementById("btn-run");
+  var bPause = document.getElementById("btn-pause");
+  var bFail = document.getElementById("btn-fail");
+  var nodes = [], S = null, timer = null, tiles = {};
+
+  function build() {
+    nodes = []; tiles = {};
+    elNodes.innerHTML = "";
+    GROUPS.forEach(function (g) {
+      var wrap = document.createElement("div");
+      wrap.className = "sim-group";
+      var h = document.createElement("h3");
+      h.innerHTML = g.name + "<span>concurrency " + g.conc + "</span>";
+      var list = document.createElement("div");
+      list.className = "nodes";
+      g.nodes.forEach(function (name) {
+        var n = { name: name, group: g, state: "Pending", t: 0, willFail: false };
+        nodes.push(n);
+        var d = document.createElement("div");
+        d.className = "node";
+        d.innerHTML = "<b>" + name + "</b><i></i>";
+        list.appendChild(d);
+        tiles[name] = d;
+      });
+      wrap.appendChild(h); wrap.appendChild(list);
+      elNodes.appendChild(wrap);
+    });
+  }
+
+  function fresh() {
+    S = { phase: "Pending", tick: 0, pf: 0, lastRound: -99, paused: false, failNext: false, failures: 0, started: false, log: [] };
+    build(); render();
+  }
+
+  function log(msg, cls) {
+    S.log.push({ t: S.tick, msg: msg, cls: cls || "" });
+    if (S.log.length > 9) S.log.shift();
+  }
+  function count(state) { return nodes.filter(function (n) { return n.state === state; }).length; }
+  function running() { return nodes.filter(function (n) { return DUR[n.state]; }).length; }
+  function finished() { return S.phase === "Completed" || (S.phase === "Failed" && running() === 0); }
+  function pad(s, w) { s = String(s); while (s.length < w) s += " "; return s; }
+
+  function render() {
+    var shown = (S.paused && S.phase === "InProgress") ? "Paused" : S.phase;
+    var run = running();
+    elStatus.innerHTML =
+      "<span class='hd'>$ kubectl get patchplan simple-upgrade</span>\n" +
+      "<span class='hd'>" + pad("NAME", 17) + pad("PHASE", 14) + pad("TOTAL", 8) + pad("RUNNING", 10) + pad("COMPLETED", 12) + "FAILED</span>\n" +
+      pad("simple-upgrade", 17) + "<span class='ph' data-p='" + shown + "'>" + pad(shown, 14) + "</span>" +
+      pad(nodes.length, 8) + pad(run, 10) + pad(count("Completed"), 12) + count("Failed");
+    nodes.forEach(function (n) {
+      var d = tiles[n.name];
+      d.setAttribute("data-s", n.state);
+      d.querySelector("i").textContent = n.state;
+    });
+    elLog.innerHTML = S.log.map(function (e) {
+      return "<div class='" + e.cls + "'><span class='t'>+" + e.t + "m</span>" + e.msg + "</div>";
+    }).join("");
+    bRun.textContent = S.started ? "Restart" : "Run rollout";
+    var live = S.started && !finished();
+    bPause.disabled = !live || S.phase === "Preflighting";
+    bPause.textContent = S.paused ? "Resume plan" : "Pause plan";
+    bFail.disabled = !live || S.failNext || S.phase === "Failed";
+    bFail.textContent = S.failNext ? "Next node will fail" : "Fail next node";
+  }
+
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+
+  function tick() {
+    if (finished()) { stop(); render(); return; }
+    S.tick++;
+
+    if (S.phase === "Pending") { S.phase = "Preflighting"; log("preflight started"); }
+    if (S.phase === "Preflighting") {
+      S.pf++;
+      var msgs = { 1: "preflight: Kubernetes API is ready", 2: "preflight: Talos credentials work", 3: "preflight: installer image found" };
+      if (msgs[S.pf]) log(msgs[S.pf]);
+      if (S.pf >= 4) { S.phase = "InProgress"; log("preflight passed, rollout starts", "good"); }
+      render(); return;
+    }
+
+    nodes.forEach(function (n) {
+      if (!DUR[n.state]) return;
+      n.t++;
+      if (n.t < DUR[n.state]) return;
+      if (n.state === "Upgrading" && n.willFail) {
+        n.state = "Failed"; S.failures++;
+        log(n.name + " failed: booted the old version", "bad");
+        return;
+      }
+      n.state = NEXT[n.state]; n.t = 0;
+      if (n.state === "Upgrading") log(n.name + " upgrading Talos to " + TARGET);
+      else if (n.state === "Rebooting") log(n.name + " rebooting");
+      else if (n.state === "Completed") log(n.name + " completed", "good");
+    });
+
+    if (S.phase === "InProgress" && S.failures >= 1) {
+      S.phase = "Failed";
+      log("plan Failed: failure threshold reached (Halt)", "bad");
+    }
+
+    if (S.phase === "InProgress" && !S.paused) {
+      for (var gi = 0; gi < GROUPS.length; gi++) {
+        var g = GROUPS[gi];
+        var members = nodes.filter(function (n) { return n.group === g; });
+        if (members.every(function (n) { return n.state === "Completed"; })) continue;
+        var pending = members.filter(function (n) { return n.state === "Pending"; });
+        var free = g.conc - members.filter(function (n) { return DUR[n.state]; }).length;
+        if (pending.length && free > 0 && S.tick - S.lastRound >= 2) {
+          pending.slice(0, free).forEach(function (n) {
+            n.state = "Draining"; n.t = 0;
+            if (S.failNext) { n.willFail = true; S.failNext = false; }
+            log(n.name + " draining, respecting PodDisruptionBudgets");
+          });
+          S.lastRound = S.tick;
+        }
+        break;
+      }
+      if (nodes.every(function (n) { return n.state === "Completed"; })) {
+        S.phase = "Completed"; log("plan Completed: all nodes processed", "good");
+      }
+    }
+    render();
+    if (finished()) stop();
+  }
+
+  function start() {
+    stop(); fresh(); S.started = true; render();
+    tick();
+    timer = setInterval(tick, TICK_MS);
+  }
+
+  bRun.addEventListener("click", start);
+  bPause.addEventListener("click", function () {
+    S.paused = !S.paused;
+    log(S.paused ? "plan paused: no new nodes are scheduled" : "plan resumed");
+    render();
+  });
+  bFail.addEventListener("click", function () { S.failNext = true; render(); });
+
+  fresh();
+
+  if (!reduce && "IntersectionObserver" in window) {
+    var seen = false;
+    new IntersectionObserver(function (entries, obs) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !seen) { seen = true; obs.disconnect(); start(); }
+      });
+    }, { threshold: 0.4 }).observe(document.getElementById("sim"));
+  }
+})();
+</script>
+</body>
+</html>
