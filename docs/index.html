@@ -138,6 +138,7 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; }
 .ph[data-p="Paused"] { color: #F2C98F; }
 .ph[data-p="Failed"] { color: #FF8A8E; }
 .sim-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 28px; }
+.sim-grid > * { min-width: 0; }
 .sim-group + .sim-group { margin-top: 22px; }
 .sim-group h3 { margin: 0 0 10px; font: 600 0.95rem var(--body); color: #DCE6FF; }
 .sim-group h3 span { font-weight: 400; color: #8E9DC4; margin-left: 8px; }
@@ -151,11 +152,30 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; }
 .node[data-s="Completed"] { background: rgba(47,182,124,.17); border-color: #2FB67C; }
 .node[data-s="Failed"] { background: rgba(229,72,77,.22); border-color: #F0686C; }
 .node:not([data-s="Pending"]) i { color: #DCE6FF; }
-.sim-log { margin: 0; padding: 14px 16px; background: rgba(255,255,255,0.045); border-radius: 10px; font: 400 0.8rem/1.7 var(--mono); min-height: 15.5rem; color: #B7C5E8; overflow: hidden; }
+.sim-log { margin: 22px 0 0; padding: 14px 16px; background: rgba(255,255,255,0.045); border-radius: 10px; font: 400 0.8rem/1.7 var(--mono); min-height: 15.5rem; color: #B7C5E8; overflow: hidden; }
 .sim-log div { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .sim-log .t { color: #6F80AB; margin-right: 10px; }
 .sim-log .bad { color: #FF8A8E; }
 .sim-log .good { color: #5FD6A2; }
+.slack { padding: 14px 16px; background: #1A1D21; border: 1px solid #35373B; border-radius: 10px; font-size: 0.86rem; line-height: 1.55; color: #D1D2D3; }
+.slack .bar { display: flex; align-items: center; gap: 8px; margin: -14px -16px 12px; padding: 8px 16px; background: #4A154B; border-radius: 9px 9px 0 0; font-weight: 600; color: #fff; }
+.slack .chan { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid #35373B; font-weight: 600; color: #fff; }
+.slack .msg { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
+.slack .msg img { border-radius: 6px; }
+.slack .who { font-weight: 600; color: #fff; }
+.slack .who span { margin-left: 4px; padding: 1px 4px; border-radius: 3px; background: #35373B; font-size: 0.66rem; color: #ABABAD; vertical-align: 1px; }
+.slack .ttl { margin: 2px 0 4px; font-weight: 600; font-size: 0.98rem; color: #fff; }
+.slack p { margin: 0 0 8px; }
+.slack b { font-weight: 600; color: #F8F8F8; }
+.slack .lnk { color: #1D9BD1; }
+.slack .at { padding: 0 3px; border-radius: 3px; background: rgba(29,155,209,.16); color: #1D9BD1; }
+.slack .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.slack .btns span { padding: 4px 12px; border: 1px solid; border-radius: 6px; font-weight: 600; font-size: 0.82rem; }
+.slack .ok { background: #007A5A; border-color: #007A5A; color: #fff; }
+.slack .no { color: #FF8A8E; border-color: rgba(255,138,142,.5); }
+.slack .reply { margin-top: 12px; padding-left: 12px; border-left: 2px solid #35373B; }
+.slack .reply p:last-child { margin-bottom: 0; }
+.slack pre { margin: 0 0 8px; padding: 8px 10px; background: #222529; border: 1px solid #35373B; border-radius: 6px; font: 400 0.74rem/1.6 var(--mono); overflow-x: auto; }
 .sim-ctl { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
 .sim-ctl button { font: 600 0.92rem var(--body); color: #E8EEFC; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); border-radius: 9px; padding: 9px 16px; cursor: pointer; }
 .sim-ctl button:hover:not(:disabled) { background: rgba(255,255,255,0.16); }
@@ -244,12 +264,14 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; }
 
 @media (max-width: 900px) {
   .hero-grid, .how, .sim-grid, .features, .docs, .foot-grid { grid-template-columns: 1fr; }
+  .slack { order: -1; }
   .hero-logo { order: -1; width: min(60%, 260px); justify-self: start; }
   .foot-links { justify-content: flex-start; }
 }
 @media (max-width: 680px) {
   .nav a:not(.gh):not(.keep) { display: none; }
   .nav { gap: 14px; }
+  .slack pre { padding: 8px; font-size: 0.63rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -307,14 +329,39 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; }
 <section class="section section-alt" id="rollout">
   <div class="wrap">
     <h2>Watch a rollout</h2>
-    <p class="intro">A simulated PatchPlan with the default order: control plane first, then workers. Pause the plan, or make the next node fail to see the <code>Halt</code> failure policy stop it.</p>
+    <p class="intro">A simulated auto-update: a new Talos release waits for approval in Slack, then its PatchPlan rolls out, control plane first, and reports every node in the thread. Pause the plan, or make the next node fail to see the <code>Halt</code> failure policy stop it.</p>
 
     <div class="sim" id="sim">
       <pre class="sim-status" id="sim-status" aria-hidden="true"></pre>
-      <p class="sr-only" id="sim-sr">Simulation of a PatchPlan upgrading three control plane nodes and six worker nodes to Talos v1.12.1. Use the buttons below to run, pause, restart, or make the next node fail.</p>
+      <p class="sr-only" id="sim-sr">Simulation of an auto-update to Talos v1.12.1. A Slack message announces the release with Approve release and Reject release buttons. Once two approvers have approved, a PatchPlan upgrades three control plane nodes and six worker nodes, and a reply in the Slack thread lists each node with its group, phase and time. Use the buttons below to run, pause, restart, or make the next node fail.</p>
       <div class="sim-grid">
-        <div id="sim-nodes" aria-hidden="true"></div>
-        <div class="sim-log" id="sim-log" role="log" aria-live="off" aria-hidden="true"></div>
+        <div>
+          <div id="sim-nodes" aria-hidden="true"></div>
+          <div class="sim-log" id="sim-log" role="log" aria-live="off" aria-hidden="true"></div>
+        </div>
+        <div class="slack" aria-hidden="true">
+          <div class="bar">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="#E01E5A" d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z"/>
+              <path fill="#36C5F0" d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z"/>
+              <path fill="#2EB67D" d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z"/>
+              <path fill="#ECB22E" d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/>
+            </svg>
+            Slack
+          </div>
+          <p class="chan"># talos-upgrades</p>
+          <div class="msg">
+            <img src="favicon.png" alt="" width="30" height="30">
+            <div>
+              <div class="who">KangalPatch<span>APP</span></div>
+              <div class="ttl">Talos v1.12.1 is available</div>
+              <p><b>Plan:</b> homelab<br><b>Cluster name:</b> homelab<br><b>Environment:</b> Home<br><b>Current version:</b> v1.12.0</p>
+              <p class="lnk">View the full release notes on GitHub</p>
+              <div id="sim-approval"></div>
+            </div>
+          </div>
+          <div id="sim-thread"></div>
+        </div>
       </div>
       <div class="sim-ctl">
         <button type="button" class="run" id="btn-run">Run rollout</button>
@@ -780,7 +827,7 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
         <a href="https://github.com/uozalp/kangal-patch/blob/main/LICENSE">MIT License</a>
       </div>
     </div>
-    <p class="legal">KangalPatch is an independent open source project released under the MIT License. Talos Linux is a project of Sidero Labs. Kubernetes is a trademark of The Linux Foundation.</p>
+    <p class="legal">KangalPatch is an independent open source project released under the MIT License. Talos Linux is a project of Sidero Labs. Kubernetes is a trademark of The Linux Foundation. Slack is a trademark of Slack Technologies, LLC.</p>
   </div>
 </footer>
 
@@ -869,10 +916,14 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
     { name: "workers", conc: 2, nodes: ["worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6"] }
   ];
   var TARGET = "v1.12.1", TICK_MS = 600;
+  var PLAN = "homelab-" + TARGET, APPROVERS = ["alice", "bob"], FAIL_MSG = "booted the old version";
+  var HALT_MSG = "failure policy Halt: 1 failed node(s), maxFailures 1";
 
   var elStatus = document.getElementById("sim-status");
   var elNodes = document.getElementById("sim-nodes");
   var elLog = document.getElementById("sim-log");
+  var elApproval = document.getElementById("sim-approval");
+  var elThread = document.getElementById("sim-thread");
   var bRun = document.getElementById("btn-run");
   var bPause = document.getElementById("btn-pause");
   var bFail = document.getElementById("btn-fail");
@@ -903,7 +954,7 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
   }
 
   function fresh() {
-    S = { phase: "Pending", tick: 0, pf: 0, lastRound: -99, paused: false, failNext: false, failures: 0, started: false, log: [] };
+    S = { phase: "Watching", tick: 0, ap: 0, approvals: [], t0: 0, end: 0, pf: 0, lastRound: -99, paused: false, failNext: false, failures: 0, started: false, log: [] };
     build(); render();
   }
 
@@ -915,15 +966,48 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
   function running() { return nodes.filter(function (n) { return DUR[n.state]; }).length; }
   function finished() { return S.phase === "Completed" || (S.phase === "Failed" && running() === 0); }
   function pad(s, w) { s = String(s); while (s.length < w) s += " "; return s; }
+  // Simulated minutes, as the operator prints durations: 45m, 1h, 1h12m.
+  function dur(m) { return (m >= 60 ? Math.floor(m / 60) + "h" : "") + (m % 60 || m < 60 ? m % 60 + "m" : ""); }
+
+  function renderSlack(shown) {
+    var who = S.approvals.map(function (a) { return "<span class='at'>@" + a + "</span>"; }).join(", ");
+    var need = APPROVERS.length;
+    elApproval.innerHTML = S.approvals.length === need
+      ? "<p><b>Release APPROVED:</b> " + need + "/" + need + " approvals received (" + who + ").</p>"
+      : "<p><b>Approval status:</b> " + S.approvals.length + "/" + need + (who ? " (" + who + ")" : "") + "</p>" +
+        "<div class='btns'><span class='ok'>Approve release</span><span class='no'>Reject release</span></div>";
+
+    if (S.phase === "Watching") { elThread.innerHTML = ""; return; }
+    var failed = nodes.filter(function (n) { return n.state === "Failed"; });
+    var label = { Completed: "Completed", Failed: "Failed", Paused: "Paused" }[shown] || "In progress";
+    var summary = count("Completed") + "/" + nodes.length + " nodes patched" +
+      (failed.length ? ", " + failed.length + " failed" : "") + (S.end ? " in " + dur(S.end - S.t0) : "");
+    var table = pad("NODE", 10) + pad("GROUP", 14) + pad("PHASE", 11) + "TIME\n" + nodes.map(function (n) {
+      return pad(n.name, 10) + pad(n.group.name, 14) + pad(n.state, 11) + (n.took ? dur(n.took) : "");
+    }).join("\n");
+    elThread.innerHTML =
+      "<div class='reply'><div class='who'>KangalPatch<span>APP</span></div>" +
+      "<div class='ttl'>Rollout of Talos " + TARGET + "</div>" +
+      "<p><b>" + label + ":</b> " + summary + (failed.length ? "<br>" + HALT_MSG : "") + "</p>" +
+      "<pre>" + table + "</pre>" +
+      failed.map(function (n) { return "<p><b>" + n.name + "</b>: " + FAIL_MSG + "</p>"; }).join("") + "</div>" +
+      failed.map(function (n) {
+        return "<div class='reply'><div class='who'>KangalPatch<span>APP</span></div>" +
+          "<p><b>Node failed:</b> " + n.name + ": " + FAIL_MSG + "<br><b>Halted, manual action needed</b> on plan " + PLAN + ".<br>" + HALT_MSG + "</p></div>";
+      }).join("");
+  }
 
   function render() {
     var shown = (S.paused && S.phase === "InProgress") ? "Paused" : S.phase;
     var run = running();
-    elStatus.innerHTML =
-      "<span class='hd'>$ kubectl get patchplan simple-upgrade</span>\n" +
+    // The child plan does not exist until the release is approved; the trailing line keeps the height.
+    elStatus.innerHTML = S.phase === "Watching"
+      ? "<span class='hd'>$ kubectl get patchplan homelab -o jsonpath='{.status.message}'</span>\nTalos " + TARGET + " awaits approval in Slack\n "
+      : "<span class='hd'>$ kubectl get patchplan " + PLAN + "</span>\n" +
       "<span class='hd'>" + pad("NAME", 17) + pad("PHASE", 14) + pad("TOTAL", 8) + pad("RUNNING", 10) + pad("COMPLETED", 12) + "FAILED</span>\n" +
-      pad("simple-upgrade", 17) + "<span class='ph' data-p='" + shown + "'>" + pad(shown, 14) + "</span>" +
+      pad(PLAN, 17) + "<span class='ph' data-p='" + shown + "'>" + pad(shown, 14) + "</span>" +
       pad(nodes.length, 8) + pad(run, 10) + pad(count("Completed"), 12) + count("Failed");
+    renderSlack(shown);
     nodes.forEach(function (n) {
       var d = tiles[n.name];
       d.setAttribute("data-s", n.state);
@@ -934,7 +1018,7 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
     }).join("");
     bRun.textContent = S.started ? "Restart" : "Run rollout";
     var live = S.started && !finished();
-    bPause.disabled = !live || S.phase === "Preflighting";
+    bPause.disabled = !live || S.phase !== "InProgress";
     bPause.textContent = S.paused ? "Resume plan" : "Pause plan";
     bFail.disabled = !live || S.failNext || S.phase === "Failed";
     bFail.textContent = S.failNext ? "Next node will fail" : "Fail next node";
@@ -946,7 +1030,18 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
     if (finished()) { stop(); render(); return; }
     S.tick++;
 
-    if (S.phase === "Pending") { S.phase = "Preflighting"; log("preflight started"); }
+    if (S.phase === "Watching") {
+      S.ap++;
+      if (S.ap === 1) log("Talos " + TARGET + " awaits approval in Slack");
+      if (S.ap === 3 || S.ap === 5) {
+        S.approvals.push(APPROVERS[S.approvals.length]);
+        log(S.approvals[S.approvals.length - 1] + " approved in Slack (" + S.approvals.length + "/" + APPROVERS.length + ")");
+      }
+      if (S.approvals.length === APPROVERS.length) { S.phase = "Pending"; log("Created approved PatchPlan " + PLAN, "good"); }
+      render(); return;
+    }
+
+    if (S.phase === "Pending") { S.phase = "Preflighting"; S.t0 = S.tick; log("preflight started"); }
     if (S.phase === "Preflighting") {
       S.pf++;
       var msgs = { 1: "preflight: Kubernetes API is ready", 2: "preflight: Talos credentials work", 3: "preflight: installer image found" };
@@ -960,18 +1055,18 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
       n.t++;
       if (n.t < DUR[n.state]) return;
       if (n.state === "Upgrading" && n.willFail) {
-        n.state = "Failed"; S.failures++;
-        log(n.name + " failed: booted the old version", "bad");
+        n.state = "Failed"; S.failures++; n.took = S.tick - n.start;
+        log(n.name + " failed: " + FAIL_MSG, "bad");
         return;
       }
       n.state = NEXT[n.state]; n.t = 0;
       if (n.state === "Upgrading") log(n.name + " upgrading Talos to " + TARGET);
       else if (n.state === "Rebooting") log(n.name + " rebooting");
-      else if (n.state === "Completed") log(n.name + " completed", "good");
+      else if (n.state === "Completed") { n.took = S.tick - n.start; log(n.name + " completed", "good"); }
     });
 
     if (S.phase === "InProgress" && S.failures >= 1) {
-      S.phase = "Failed";
+      S.phase = "Failed"; S.end = S.tick;
       log("plan Failed: failure threshold reached (Halt)", "bad");
     }
 
@@ -984,7 +1079,7 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
         var free = g.conc - members.filter(function (n) { return DUR[n.state]; }).length;
         if (pending.length && free > 0 && S.tick - S.lastRound >= 2) {
           pending.slice(0, free).forEach(function (n) {
-            n.state = "Draining"; n.t = 0;
+            n.state = "Draining"; n.t = 0; n.start = S.tick;
             if (S.failNext) { n.willFail = true; S.failNext = false; }
             log(n.name + " draining, respecting PodDisruptionBudgets");
           });
@@ -993,7 +1088,7 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
         break;
       }
       if (nodes.every(function (n) { return n.state === "Completed"; })) {
-        S.phase = "Completed"; log("plan Completed: all nodes processed", "good");
+        S.phase = "Completed"; S.end = S.tick; log("plan Completed: all nodes processed", "good");
       }
     }
     render();
@@ -1020,9 +1115,9 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
     var seen = false;
     new IntersectionObserver(function (entries, obs) {
       entries.forEach(function (e) {
-        if (e.isIntersecting && !seen) { seen = true; obs.disconnect(); start(); }
+        if (e.isIntersecting && !seen) { seen = true; obs.disconnect(); if (!S.started) start(); }
       });
-    }, { threshold: 0.4 }).observe(document.getElementById("sim"));
+    }, { threshold: 1 }).observe(elApproval);
   }
 })();
 </script>
