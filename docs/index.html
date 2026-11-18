@@ -359,6 +359,7 @@ code, kbd { font-family: var(--mono); font-size: 0.9em; }
         <h3>Hands-off when you want it</h3>
         <ul>
           <li><strong>Auto-update</strong>Follow upstream Talos releases, with a minimum release age before one is used.</li>
+          <li><strong>Slack approval and status</strong>Approve or reject each new release in Slack, then follow the rollout node by node in the thread of that message.</li>
           <li><strong>Kubernetes upgrades</strong>Patch the kubelet, control plane static pods and kube-proxy without reboots.</li>
           <li><strong>Live status</strong>Track every plan, group and node. Finished PatchJobs are cleaned up after a retention period.</li>
         </ul>
@@ -566,6 +567,7 @@ $ kubectl get patchjob</code></pre>
         <button role="tab" type="button">Rollout groups</button>
         <button role="tab" type="button">Maintenance windows</button>
         <button role="tab" type="button">Auto-update</button>
+        <button role="tab" type="button">Slack approval</button>
         <button role="tab" type="button">Custom schematic</button>
         <button role="tab" type="button">Pause and cancel</button>
       </div>
@@ -645,6 +647,46 @@ $ kubectl get patchjob</code></pre>
       </div>
 
       <div role="tabpanel">
+        <p class="tab-note">Each eligible release is announced in a Slack channel with the release notes and <strong>Approve release</strong> and <strong>Reject release</strong> buttons. The child plan is created only once enough approvers have approved, and one rejection is final. The rollout then reports its progress in the thread: one message with a table of the nodes that is edited as they move through the phases, and a separate reply when a node fails.</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="yaml">metadata:
+  name: homelab
+  annotations:              # optional, shown as fields in the Slack message
+    slack.kangalpatch.ozalp.dk/environment: Home
+    slack.kangalpatch.ozalp.dk/cluster-name: homelab
+spec:
+  target:
+    source: factory
+    installer: nocloud
+    autoUpdate:
+      enabled: true
+      minReleaseAge: 72h
+      approval:
+        slack:
+          enabled: true
+          expireAfter: 72h    # optional; omitted = a pending approval never expires</code></pre>
+        </div>
+        <p class="tab-note" style="margin-top:16px">The Slack app, channel and approvers are operator settings, shared by all plans. Create the app in your workspace from <a href="https://github.com/uozalp/kangal-patch/blob/main/config/slack/app-manifest.yaml">config/slack/app-manifest.yaml</a>, invite it to the channel, then give the operator its two tokens:</p>
+        <div class="code has-copy">
+          <button class="copy" type="button" aria-label="Copy code">Copy</button>
+<pre><code data-lang="bash"># Bot token (xoxb-) and app-level token (xapp-, scope connections:write)
+kubectl create secret generic slack-credentials \
+  --namespace kangal-patch \
+  --from-literal=bot-token="$SLACK_BOT_TOKEN" \
+  --from-literal=app-token="$SLACK_APP_TOKEN"
+
+# Channel, approvers and the number of approvals a release needs
+helm upgrade kangal-patch oci://ghcr.io/uozalp/helm/kangal-patch --reuse-values \
+  --set slack.existingSecret=slack-credentials \
+  --set slack.channelID=C0123456789 \
+  --set 'slack.approvers={U0123456789,U0987654321}' \
+  --set slack.requiredApprovals=2</code></pre>
+        </div>
+        <p class="footnote">Slack approval is newer than release 0.2.0 and needs the next release of the operator and chart. The operator connects out to Slack with Socket Mode, so it needs no public endpoint. The full setup, including kubectl, is in the <a href="https://github.com/uozalp/kangal-patch#slack-approval">Slack approval guide</a>.</p>
+      </div>
+
+      <div role="tabpanel">
         <p class="tab-note">Set <code>schematicID</code> to change the extensions and customization of the Talos image on every node. Add <code>secureBoot</code> to use the secure boot installer.</p>
         <div class="code has-copy">
           <button class="copy" type="button" aria-label="Copy code">Copy</button>
@@ -699,7 +741,7 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
       </a>
       <a href="https://github.com/uozalp/kangal-patch#operations-guide">
         <strong>Operations guide</strong>
-        <span>Maintenance windows, rollout groups, preflight checks, auto-update and Kubernetes version compatibility.</span>
+        <span>Maintenance windows, rollout groups, preflight checks, auto-update, Slack approval and Kubernetes version compatibility.</span>
       </a>
       <a href="https://github.com/uozalp/kangal-patch#troubleshooting">
         <strong>Troubleshooting</strong>
@@ -707,11 +749,11 @@ kubectl patch patchplan simple-upgrade --type merge -p '{"spec":{"cancelled":tru
       </a>
       <a href="https://github.com/uozalp/kangal-patch/tree/main/config/samples">
         <strong>Sample manifests</strong>
-        <span>Ready-to-apply plans for control plane only, custom groups, maintenance windows and auto-update.</span>
+        <span>Ready-to-apply plans for control plane only, custom groups, maintenance windows, auto-update and Slack approval.</span>
       </a>
       <a href="https://github.com/uozalp/kangal-patch/blob/main/helm/kangal-patch/values.yaml">
         <strong>Helm chart values</strong>
-        <span>Replicas, resources, leader election and RBAC settings.</span>
+        <span>Replicas, resources, leader election, RBAC and Slack settings.</span>
       </a>
       <a href="https://github.com/uozalp/kangal-patch#contributing">
         <strong>Contributing</strong>
