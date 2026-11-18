@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Enables Slack approval: kubectl apply -k config/slack
+# Edit the channel, approvers and required approvals below, and create the slack-credentials Secret.
+resources:
+- ../manager
+
+patches:
+- target:
+    kind: Deployment
+    name: controller-manager
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --slack-channel-id=C0123456789
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --slack-approvers=U0123456789,U0987654321
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --slack-required-approvals=1

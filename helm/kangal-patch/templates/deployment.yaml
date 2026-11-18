@@ -39,6 +39,11 @@ spec:
         {{- end }}        
         - --health-probe-bind-address={{ .Values.controllerManager.healthProbe.bindAddress }}
         - --metrics-bind-address={{ .Values.controllerManager.metrics.bindAddress }}
+        {{- if .Values.slack.channelID }}
+        - --slack-channel-id={{ .Values.slack.channelID }}
+        - --slack-approvers={{ join "," .Values.slack.approvers }}
+        - --slack-required-approvals={{ .Values.slack.requiredApprovals }}
+        {{- end }}
         ports:
         - containerPort: 8080
           name: metrics
@@ -63,6 +68,18 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        {{- if .Values.slack.existingSecret }}
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.slack.existingSecret }}
+              key: bot-token
+        - name: SLACK_APP_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.slack.existingSecret }}
+              key: app-token
+        {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

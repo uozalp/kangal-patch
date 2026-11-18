@@ -70,13 +70,13 @@ func Test_Select(t *testing.T) {
 
 	releases := func(t *testing.T) []Release {
 		return []Release{
-			{mustParse(t, "v1.13.0"), ago(60 * day)},
-			{mustParse(t, "v1.13.3"), ago(10 * day)},
-			{mustParse(t, "v1.13.4"), ago(5 * day)},
-			{mustParse(t, "v1.13.5"), ago(1 * day)},
-			{mustParse(t, "v1.14.0"), ago(20 * day)},
-			{mustParse(t, "v1.14.1"), ago(2 * day)},
-			{mustParse(t, "v1.15.0"), ago(3 * day)},
+			{Version: mustParse(t, "v1.13.0"), PublishedAt: ago(60 * day)},
+			{Version: mustParse(t, "v1.13.3"), PublishedAt: ago(10 * day)},
+			{Version: mustParse(t, "v1.13.4"), PublishedAt: ago(5 * day)},
+			{Version: mustParse(t, "v1.13.5"), PublishedAt: ago(1 * day)},
+			{Version: mustParse(t, "v1.14.0"), PublishedAt: ago(20 * day)},
+			{Version: mustParse(t, "v1.14.1"), PublishedAt: ago(2 * day)},
+			{Version: mustParse(t, "v1.15.0"), PublishedAt: ago(3 * day)},
 		}
 	}
 
@@ -85,6 +85,7 @@ func Test_Select(t *testing.T) {
 		current     string
 		allow       string
 		minAge      time.Duration
+		exclude     map[string]bool
 		wantTarget  string
 		wantPending string
 		wantLatest  string
@@ -96,11 +97,12 @@ func Test_Select(t *testing.T) {
 		{name: "minor steps one minor only", current: "v1.13.0", allow: AllowMinor, wantTarget: "v1.14.1", wantLatest: "v1.15.0"},
 		{name: "minor falls back to older eligible", current: "v1.13.0", allow: AllowMinor, minAge: 3 * day, wantTarget: "v1.14.0", wantPending: "v1.14.1", wantLatest: "v1.15.0"},
 		{name: "minor from previous minor", current: "v1.14.1", allow: AllowMinor, wantTarget: "v1.15.0", wantLatest: "v1.15.0"},
+		{name: "excluded version falls back to older eligible", current: "v1.13.0", allow: AllowPatch, exclude: map[string]bool{"v1.13.5": true}, wantTarget: "v1.13.4", wantLatest: "v1.15.0"},
 		{name: "current ahead of everything", current: "v1.16.0", allow: AllowMinor, wantLatest: "v1.15.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Select(releases(t), mustParse(t, tt.current), tt.allow, tt.minAge, now)
+			got := Select(releases(t), mustParse(t, tt.current), tt.allow, tt.minAge, now, tt.exclude)
 
 			check := func(label string, r *Release, want string) {
 				t.Helper()

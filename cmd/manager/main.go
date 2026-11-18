@@ -27,6 +27,7 @@ import (
 	kangalpatchv1alpha1 "github.com/uozalp/kangal-patch/api/v1alpha1"
 	"github.com/uozalp/kangal-patch/controllers"
 	"github.com/uozalp/kangal-patch/internal/release"
+	"github.com/uozalp/kangal-patch/internal/slack"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -45,10 +46,15 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var enableLeaderElection bool
+	var slackChannelID, slackApprovers string
+	var slackRequired int
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
+	flag.StringVar(&slackChannelID, "slack-channel-id", "", "Slack channel that release approvals are posted to. The bot and app tokens come from SLACK_BOT_TOKEN and SLACK_APP_TOKEN.")
+	flag.StringVar(&slackApprovers, "slack-approvers", "", "Comma-separated Slack user IDs allowed to approve or reject releases.")
+	flag.IntVar(&slackRequired, "slack-required-approvals", 1, "Number of approvals a release needs.")
 	opts := zap.Options{
 		Development: false,
 	}
@@ -87,13 +93,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.PatchPlanReconciler{
+	slackCfg := slack.Config{
+		BotToken:  os.Getenv("SLACK_BOT_TOKEN"),
+		AppToken:  os.Getenv("SLACK_APP_TOKEN"),
+		ChannelID: slackChannelID,
+		Approvers: slack.ParseApprovers(slackApprovers),
+		Required:  slackRequired,
+	}
+	planReconciler := &controllers.PatchPlanReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Namespace: operatorNamespace,
 		Discovery: discoveryClient,
 		Releases:  &release.Fetcher{HTTPClient: &http.Client{Timeout: 30 * time.Second}},
-	}).SetupWithManager(mgr); err != nil {
+		APIReader: mgr.GetAPIReader(),
+	}
+	if slackCfg.Set() {
+		if err := slackCfg.Validate(); err != nil {
+			// Plans that enable Slack approval report this in their status; the operator keeps running.
+			planReconciler.SlackErr = err
+			setupLog.Error(err, "invalid Slack configuration, Slack approval is disabled")
+		} else {
+			slackClient := slack.NewClient(slackCfg)
+			planReconciler.Slack = slackClient
+			if err := mgr.Add(&slack.Listener{Config: slackCfg, Slack: slackClient, Reader: mgr.GetAPIReader(), Writer: mgr.GetClient()}); err != nil {
+				setupLog.Error(err, "unable to add the Slack listener")
+				os.Exit(1)
+			}
+		}
+	}
+
+	if err = planReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PatchPlan")
 		os.Exit(1)
 	}

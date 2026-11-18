@@ -1,0 +1,19 @@
+display_information:
+  name: KangalPatch
+  description: Approve Talos Linux releases
+  background_color: "#2c3e50"
+features:
+  bot_user:
+    display_name: KangalPatch
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      # Invite the bot to the channel (or add chat:write.public)
+      - chat:write
+settings:
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false

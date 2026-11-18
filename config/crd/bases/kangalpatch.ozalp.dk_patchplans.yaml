@@ -372,6 +372,28 @@ spec:
                         - patch
                         - minor
                         type: string
+                      approval:
+                        description: Approval requires a person to approve each release
+                          before its child PatchPlan is created.
+                        properties:
+                          slack:
+                            description: Slack announces each eligible release in
+                              Slack, where authorized users approve or reject it.
+                            properties:
+                              enabled:
+                                description: Enabled turns on Slack approval for this
+                                  plan.
+                                type: boolean
+                              expireAfter:
+                                description: |-
+                                  ExpireAfter is how long a release may wait for a decision. An expired release is treated like a
+                                  rejected one. Omitted means a pending approval never expires.
+                                pattern: ^([0-9]+(\.[0-9]+)?(s|m|h))+$
+                                type: string
+                            required:
+                            - enabled
+                            type: object
+                        type: object
                       checkInterval:
                         default: 1h
                         description: CheckInterval is how often to look for a new
@@ -465,6 +487,205 @@ spec:
                 description: AutoUpdate reports the release watcher state. Only set
                   on auto-update templates.
                 properties:
+                  approval:
+                    description: Approval is the state of the release approvals.
+                    properties:
+                      current:
+                        description: Current is the approval that is awaiting a decision
+                          or Slack synchronization.
+                        properties:
+                          announcedAt:
+                            format: date-time
+                            type: string
+                          applied:
+                            description: Applied is set once the child PatchPlan of
+                              an approved release has been created.
+                            type: boolean
+                          approvals:
+                            items:
+                              description: ApprovalVote is a decision of one Slack
+                                user.
+                              properties:
+                                time:
+                                  format: date-time
+                                  type: string
+                                userID:
+                                  type: string
+                              required:
+                              - time
+                              - userID
+                              type: object
+                            type: array
+                          expiresAt:
+                            description: ExpiresAt is set only when expireAfter is
+                              configured.
+                            format: date-time
+                            type: string
+                          id:
+                            description: ID is derived from the plan UID and the version,
+                              so announcing is idempotent.
+                            type: string
+                          previousVersion:
+                            description: PreviousVersion is the lowest Talos version
+                              on the nodes when the release was announced.
+                            type: string
+                          rejections:
+                            items:
+                              description: ApprovalVote is a decision of one Slack
+                                user.
+                              properties:
+                                time:
+                                  format: date-time
+                                  type: string
+                                userID:
+                                  type: string
+                              required:
+                              - time
+                              - userID
+                              type: object
+                            type: array
+                          renderedState:
+                            description: RenderedState identifies what the Slack message
+                              currently shows.
+                            type: string
+                          requiredApprovals:
+                            description: RequiredApprovals is the number of approvals
+                              needed, fixed when the release was announced.
+                            format: int32
+                            type: integer
+                          slack:
+                            description: SlackMessageRef locates the Slack message
+                              that announces a release.
+                            properties:
+                              channelID:
+                                type: string
+                              messageTS:
+                                description: MessageTS is empty until the message
+                                  has been posted.
+                                type: string
+                            required:
+                            - channelID
+                            type: object
+                          state:
+                            description: ApprovalState is the state of a release approval.
+                            enum:
+                            - Pending
+                            - Approved
+                            - Rejected
+                            - Superseded
+                            - Expired
+                            - Cancelled
+                            type: string
+                          version:
+                            type: string
+                        required:
+                        - announcedAt
+                        - id
+                        - requiredApprovals
+                        - state
+                        - version
+                        type: object
+                      history:
+                        description: History holds the latest resolved approvals,
+                          newest first (at most 10).
+                        items:
+                          description: ApprovalRecord is the approval of one release.
+                          properties:
+                            announcedAt:
+                              format: date-time
+                              type: string
+                            applied:
+                              description: Applied is set once the child PatchPlan
+                                of an approved release has been created.
+                              type: boolean
+                            approvals:
+                              items:
+                                description: ApprovalVote is a decision of one Slack
+                                  user.
+                                properties:
+                                  time:
+                                    format: date-time
+                                    type: string
+                                  userID:
+                                    type: string
+                                required:
+                                - time
+                                - userID
+                                type: object
+                              type: array
+                            expiresAt:
+                              description: ExpiresAt is set only when expireAfter
+                                is configured.
+                              format: date-time
+                              type: string
+                            id:
+                              description: ID is derived from the plan UID and the
+                                version, so announcing is idempotent.
+                              type: string
+                            previousVersion:
+                              description: PreviousVersion is the lowest Talos version
+                                on the nodes when the release was announced.
+                              type: string
+                            rejections:
+                              items:
+                                description: ApprovalVote is a decision of one Slack
+                                  user.
+                                properties:
+                                  time:
+                                    format: date-time
+                                    type: string
+                                  userID:
+                                    type: string
+                                required:
+                                - time
+                                - userID
+                                type: object
+                              type: array
+                            renderedState:
+                              description: RenderedState identifies what the Slack
+                                message currently shows.
+                              type: string
+                            requiredApprovals:
+                              description: RequiredApprovals is the number of approvals
+                                needed, fixed when the release was announced.
+                              format: int32
+                              type: integer
+                            slack:
+                              description: SlackMessageRef locates the Slack message
+                                that announces a release.
+                              properties:
+                                channelID:
+                                  type: string
+                                messageTS:
+                                  description: MessageTS is empty until the message
+                                    has been posted.
+                                  type: string
+                              required:
+                              - channelID
+                              type: object
+                            state:
+                              description: ApprovalState is the state of a release
+                                approval.
+                              enum:
+                              - Pending
+                              - Approved
+                              - Rejected
+                              - Superseded
+                              - Expired
+                              - Cancelled
+                              type: string
+                            version:
+                              type: string
+                          required:
+                          - announcedAt
+                          - id
+                          - requiredApprovals
+                          - state
+                          - version
+                          type: object
+                        maxItems: 10
+                        type: array
+                    type: object
                   currentVersion:
                     description: CurrentVersion is the lowest Talos version found
                       on the selected nodes.

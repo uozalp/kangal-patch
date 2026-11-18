@@ -23,6 +23,7 @@ import (
 	"github.com/uozalp/kangal-patch/internal/nodeutil"
 	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/scheduling"
+	"github.com/uozalp/kangal-patch/internal/slack"
 )
 
 // PatchPlanReconciler reconciles a PatchPlan object
@@ -34,6 +35,12 @@ type PatchPlanReconciler struct {
 	Discovery discovery.DiscoveryInterface
 	// Releases lists upstream Talos releases for auto-update templates.
 	Releases releaseLister
+	// APIReader reads uncached; Slack approval decisions are written with an optimistic lock on it.
+	APIReader client.Reader
+	// Slack announces releases for templates with approval.slack.enabled. Nil when Slack is not
+	// configured, in which case SlackErr says why, if it is invalid.
+	Slack    slack.Notifier
+	SlackErr error
 }
 
 // JobCounts are the PatchJob outcomes of the unique nodes covered by the rollout.

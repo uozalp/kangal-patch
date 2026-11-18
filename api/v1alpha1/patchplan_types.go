@@ -35,6 +35,108 @@ type AutoUpdateSpec struct {
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
 	// +optional
 	MinReleaseAge metav1.Duration `json:"minReleaseAge,omitempty"`
+
+	// Approval requires a person to approve each release before its child PatchPlan is created.
+	// +optional
+	Approval *ApprovalSpec `json:"approval,omitempty"`
+}
+
+// ApprovalSpec configures how releases are approved. The channel, approvers and the number of
+// approvals needed are operator-wide settings, not part of the plan.
+type ApprovalSpec struct {
+	// Slack announces each eligible release in Slack, where authorized users approve or reject it.
+	// +optional
+	Slack *SlackApprovalSpec `json:"slack,omitempty"`
+}
+
+// SlackApprovalSpec enables approval through Slack.
+type SlackApprovalSpec struct {
+	// Enabled turns on Slack approval for this plan.
+	Enabled bool `json:"enabled"`
+
+	// ExpireAfter is how long a release may wait for a decision. An expired release is treated like a
+	// rejected one. Omitted means a pending approval never expires.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(s|m|h))+$"
+	// +optional
+	ExpireAfter *metav1.Duration `json:"expireAfter,omitempty"`
+}
+
+// ApprovalState is the state of a release approval.
+// +kubebuilder:validation:Enum=Pending;Approved;Rejected;Superseded;Expired;Cancelled
+type ApprovalState string
+
+const (
+	ApprovalPending    ApprovalState = "Pending"
+	ApprovalApproved   ApprovalState = "Approved"
+	ApprovalRejected   ApprovalState = "Rejected"
+	ApprovalSuperseded ApprovalState = "Superseded"
+	ApprovalExpired    ApprovalState = "Expired"
+	ApprovalCancelled  ApprovalState = "Cancelled"
+)
+
+// ApprovalVote is a decision of one Slack user.
+type ApprovalVote struct {
+	UserID string      `json:"userID"`
+	Time   metav1.Time `json:"time"`
+}
+
+// SlackMessageRef locates the Slack message that announces a release.
+type SlackMessageRef struct {
+	ChannelID string `json:"channelID"`
+	// MessageTS is empty until the message has been posted.
+	// +optional
+	MessageTS string `json:"messageTS,omitempty"`
+}
+
+// ApprovalRecord is the approval of one release.
+type ApprovalRecord struct {
+	// ID is derived from the plan UID and the version, so announcing is idempotent.
+	ID      string `json:"id"`
+	Version string `json:"version"`
+
+	// PreviousVersion is the lowest Talos version on the nodes when the release was announced.
+	// +optional
+	PreviousVersion string `json:"previousVersion,omitempty"`
+
+	State ApprovalState `json:"state"`
+
+	// RequiredApprovals is the number of approvals needed, fixed when the release was announced.
+	RequiredApprovals int32 `json:"requiredApprovals"`
+
+	// +optional
+	Approvals []ApprovalVote `json:"approvals,omitempty"`
+	// +optional
+	Rejections []ApprovalVote `json:"rejections,omitempty"`
+
+	// +optional
+	Slack *SlackMessageRef `json:"slack,omitempty"`
+
+	AnnouncedAt metav1.Time `json:"announcedAt"`
+
+	// ExpiresAt is set only when expireAfter is configured.
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// Applied is set once the child PatchPlan of an approved release has been created.
+	// +optional
+	Applied bool `json:"applied,omitempty"`
+
+	// RenderedState identifies what the Slack message currently shows.
+	// +optional
+	RenderedState string `json:"renderedState,omitempty"`
+}
+
+// ApprovalStatus reports the release approvals of an auto-update template.
+type ApprovalStatus struct {
+	// Current is the approval that is awaiting a decision or Slack synchronization.
+	// +optional
+	Current *ApprovalRecord `json:"current,omitempty"`
+
+	// History holds the latest resolved approvals, newest first (at most 10).
+	// +kubebuilder:validation:MaxItems=10
+	// +optional
+	History []ApprovalRecord `json:"history,omitempty"`
 }
 
 // AutoUpdateStatus reports the state of the release watcher of an auto-update template.
@@ -58,6 +160,10 @@ type AutoUpdateStatus struct {
 	// LastCreatedPlan is the name of the most recent child PatchPlan.
 	// +optional
 	LastCreatedPlan string `json:"lastCreatedPlan,omitempty"`
+
+	// Approval is the state of the release approvals.
+	// +optional
+	Approval *ApprovalStatus `json:"approval,omitempty"`
 }
 
 // TargetSpec defines the target Talos and/or Kubernetes version specification.
@@ -466,6 +572,11 @@ const (
 // template's name.
 const LabelParentPlan = "kangalpatch.ozalp.dk/parent"
 
+// AnnotationSlackFieldPrefix marks annotations on an auto-update template that are shown as fields in
+// its Slack approval message: slack.kangalpatch.ozalp.dk/environment: Production is shown as
+// "Environment: Production".
+const AnnotationSlackFieldPrefix = "slack.kangalpatch.ozalp.dk/"
+
 // Labels set on the PatchJobs and Leases a PatchPlan creates. A Lease is the concurrency slot of
 // one active PatchJob, so counting Leases by plan and group gives the live concurrency.
 const (
@@ -473,6 +584,11 @@ const (
 	LabelGroup     = "kangalpatch.ozalp.dk/group"
 	LabelNode      = "kangalpatch.ozalp.dk/node"
 )
+
+// SlackApprovalEnabled reports whether new releases need approval in Slack.
+func (a *AutoUpdateSpec) SlackApprovalEnabled() bool {
+	return a != nil && a.Approval != nil && a.Approval.Slack != nil && a.Approval.Slack.Enabled
+}
 
 // IsAutoUpdateTemplate reports whether the plan only watches for releases and creates child plans.
 func (p *PatchPlan) IsAutoUpdateTemplate() bool {

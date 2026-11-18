@@ -19,6 +19,7 @@ import (
 	"github.com/uozalp/kangal-patch/internal/patchutil"
 	"github.com/uozalp/kangal-patch/internal/release"
 	"github.com/uozalp/kangal-patch/internal/scheduling"
+	"github.com/uozalp/kangal-patch/internal/slack"
 )
 
 const (
@@ -44,7 +45,20 @@ func (r *PatchPlanReconciler) reconcileAutoUpdate(ctx context.Context, patchPlan
 	interval := max(spec.CheckInterval.Duration, minAutoUpdateCheckInterval)
 
 	if patchPlan.Spec.Cancelled {
-		return ctrl.Result{}, r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseCancelled, "Auto-update cancelled by user", nil)
+		var syncErr error
+		if approvalOn(spec) && r.Slack != nil {
+			if syncErr = r.cancelApproval(ctx, patchPlan); syncErr == nil {
+				_, syncErr = r.syncApproval(ctx, patchPlan, false)
+			}
+		}
+		if err := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseCancelled, "Auto-update cancelled by user", nil); err != nil {
+			return ctrl.Result{}, err
+		}
+		if syncErr != nil {
+			logger.Info("Slack approval sync failed", "error", syncErr.Error())
+			return ctrl.Result{RequeueAfter: requeueSlackRetry}, nil
+		}
+		return ctrl.Result{}, nil
 	}
 	if patchPlan.Spec.Paused {
 		err := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhasePaused, "Auto-update paused by user", nil)
@@ -54,6 +68,26 @@ func (r *PatchPlanReconciler) reconcileAutoUpdate(ctx context.Context, patchPlan
 	if patchPlan.Status.Phase != patchv1alpha1.PatchPhaseWatching {
 		if err := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseWatching, "Watching for new Talos releases", nil); err != nil {
 			return ctrl.Result{}, err
+		}
+	}
+
+	if approvalOn(spec) {
+		if msg := r.slackUnavailable(); msg != "" {
+			err := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseWatching, msg, nil)
+			return ctrl.Result{RequeueAfter: interval}, err
+		}
+		// A decision must not wait for the check interval, so this runs before the interval gate.
+		created, syncErr := r.syncApproval(ctx, patchPlan, true)
+		if created != "" {
+			message := fmt.Sprintf("Created approved PatchPlan %s", created)
+			if err := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseWatching, message, func(s *patchv1alpha1.AutoUpdateStatus) { s.LastCreatedPlan = created }); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if syncErr != nil {
+			logger.Info("Slack approval sync failed", "error", syncErr.Error())
+			err := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseWatching, "Slack approval sync failed: "+syncErr.Error(), nil)
+			return ctrl.Result{RequeueAfter: requeueSlackRetry}, err
 		}
 	}
 
@@ -91,9 +125,19 @@ func (r *PatchPlanReconciler) reconcileAutoUpdate(ctx context.Context, patchPlan
 		return ctrl.Result{RequeueAfter: min(interval, requeueAutoUpdateRetry)}, statusErr
 	}
 
+	if approvalOn(spec) {
+		if err := r.announceRelease(ctx, patchPlan, result.Target, current); err != nil {
+			logger.Info("Slack announcement failed", "error", err.Error())
+			statusErr := r.updateTemplateStatus(ctx, patchPlan, patchv1alpha1.PatchPhaseWatching, "Slack announcement failed: "+err.Error(), nil)
+			return ctrl.Result{RequeueAfter: requeueSlackRetry}, statusErr
+		}
+	}
+
 	message := "Up to date"
 	var createdPlan string
 	switch {
+	case result.Target != nil && approvalOn(spec):
+		message = fmt.Sprintf("Talos %s awaits approval in Slack", result.Target.Version)
 	case result.Target != nil:
 		version := result.Target.Version.String()
 		name, created, err := r.createChildPlan(ctx, patchPlan, version)
@@ -151,7 +195,11 @@ func (r *PatchPlanReconciler) checkForRelease(ctx context.Context, patchPlan *pa
 		return release.Version{}, release.Result{}, err
 	}
 
-	return current, release.Select(releases, current, spec.Allow, spec.MinReleaseAge.Duration, time.Now()), nil
+	var exclude map[string]bool
+	if approvalOn(spec) && patchPlan.Status.AutoUpdate != nil {
+		exclude = slack.Excluded(patchPlan.Status.AutoUpdate.Approval)
+	}
+	return current, release.Select(releases, current, spec.Allow, spec.MinReleaseAge.Duration, time.Now(), exclude), nil
 }
 
 // lowestTalosVersion returns the lowest version reported by the Talos API across nodes.
